@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Large synthetic corpus (regenerate / provide separately; too big for git)
+datas/
+
+# Logs & local artifacts
+*.log
+/tmp/
+
+# OS
+.DS_Store

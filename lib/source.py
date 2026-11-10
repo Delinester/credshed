@@ -10,6 +10,8 @@ from .filestore import *
 from .config import config
 from datetime import datetime
 from .parser.file import File
+from . import validation
+from . import regions
 from .validation import word_regex
 
 
@@ -63,6 +65,8 @@ class Source():
         if filesize is not None and self.file._size is None:
             self.file._size = filesize
 
+        # the parser instance (set during parse(); exposes detected format + stats)
+        self.parser = None
         # set used for account deduplication
         self._accounts = set()
         # keeps track of total accounts during import
@@ -75,12 +79,22 @@ class Source():
         self.description = ''
         # SHA1 hash of file
         self._hash = None
-        # top domains
+        # top (email) domains
         self.domains = {}
         # top base words from passwords
         self.password_basewords = {}
         # top base words from misc/description field
         self.misc_basewords = {}
+        # DFIR enhancement: per-source histograms for fast regional / service stats
+        self.email_tlds = {}        # email-domain zone -> count  (victim geography)
+        self.services = {}          # breached service host -> count
+        self.service_tlds = {}      # service zone -> count
+        # login-type + phone tallies
+        self.login_types = {'email': 0, 'username': 0, 'phone': 0}
+        self.phone_count = 0
+        self.with_password = 0
+        self.with_hash = 0
+        self.with_service = 0
 
 
 
@@ -91,7 +105,10 @@ class Source():
         else:
             self.description = f'Manual import at {datetime.now().isoformat(timespec="milliseconds")}'
 
-        accounts = TextParse(self.file, unattended=unattended, strict=False, force_ascii=force_ascii)
+        # DFIR enhancement: use the format-aware, dirty-data-tolerant SmartParse
+        # (ULP / combo / CSV / SQL / JSON-lines) instead of the email-only absorber.
+        accounts = SmartParse(self.file, unattended=unattended, force_ascii=force_ascii)
+        self.parser = accounts
 
         if self.deduplicate:
             for account in accounts:
@@ -108,17 +125,41 @@ class Source():
         return self._hash
 
 
+    @staticmethod
+    def _tally(d, key):
+        if not key:
+            return
+        try:
+            d[key] += 1
+        except KeyError:
+            d[key] = 1
+
     def increment(self, account):
 
         self.total_accounts += 1
 
         if account.domain:
-            try:
-                self.domains[account.domain] += 1
-            except KeyError:
-                self.domains[account.domain] = 1
+            self._tally(self.domains, account.domain)
+            self._tally(self.email_tlds, validation.tld_of(account.domain))
+            self.login_types['email'] += 1
+        elif account.phone:
+            self.login_types['phone'] += 1
+        elif account.username:
+            self.login_types['username'] += 1
+
+        # breached service (ULP "URL" field) + its zone
+        if account.service:
+            self.with_service += 1
+            self._tally(self.services, account.service)
+            self._tally(self.service_tlds, validation.tld_of(account.service))
+
+        if account.phone:
+            self.phone_count += 1
+        if account.hashes:
+            self.with_hash += 1
 
         if account.password:
+            self.with_password += 1
             for word in word_regex.findall(account.password):
                 word = word.lower()
                 try:
@@ -151,6 +192,27 @@ class Source():
 
         sorted_words = dict(sorted(self.misc_basewords.items(), key=lambda x: x[1], reverse=True)[:limit])
         return {w: c for w,c in sorted_words.items()}
+
+
+    def top_services(self, limit=100):
+
+        sorted_services = sorted(self.services.items(), key=lambda x: x[1], reverse=True)[:limit]
+        return {s: c for s, c in sorted_services}
+
+
+    def email_tld_histogram(self, limit=None):
+        '''full email-domain zone histogram (victim geography), most common first'''
+        items = sorted(self.email_tlds.items(), key=lambda x: x[1], reverse=True)
+        if limit:
+            items = items[:limit]
+        return {t: c for t, c in items}
+
+
+    def service_tld_histogram(self, limit=None):
+        items = sorted(self.service_tlds.items(), key=lambda x: x[1], reverse=True)
+        if limit:
+            items = items[:limit]
+        return {t: c for t, c in items}
 
 
     @property

@@ -73,6 +73,20 @@ class CredShed():
         return stats
 
 
+    # DFIR enhancement passthroughs
+    def tld_stats(self, target='email', limit=None):
+        return self.db.tld_stats(target=target, limit=limit)
+
+    def region_stats(self, target='email'):
+        return self.db.region_stats(target=target)
+
+    def build_indexes(self, fields=None):
+        return self.db.build_indexes(fields)
+
+    def drop_indexes(self):
+        return self.db.drop_secondary_indexes()
+
+
     def get_source(self, source_id):
 
         return self.db.get_source(source_id)

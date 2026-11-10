@@ -6,6 +6,43 @@ Includes native Pastebin-scraping functionality.
 
 Pastebin Scraper Report
 
+## DFIR Enhancements
+
+This fork hardens credshed for **authorized DFIR / incident-response** use.
+See **[docs/DFIR_GUIDE.md](docs/DFIR_GUIDE.md)** for the full investigator playbook.
+
+**Highlights**
+- **Robust, format-aware parser** (`lib/parser/smartparse.py`). Handles modern
+  **stealer-log / ULP** dumps (`url:login:password`) plus combos, `email:hash`,
+  CSV-with-header, SQL `INSERT`, JSON-lines, pipe/tab, and heterogeneous *dirty*
+  files. On ULP data it captures **~99.8%** of rows (upstream dropped ~52%) and
+  preserves the breached **service URL** and **phone**, routing each login by
+  type (email / username / phone) per row.
+- **New search dimensions:** in addition to email / domain / username, you can
+  now search by **password** (reverse lookup), **phone**, **service** (breached
+  platform, incl. subdomains and `-q service .ru` zone), and **TLD / domain
+  zone** (`-q tld .ru`).
+- **Regional statistics** (`--tld-stats`, `--db-stats`): per-country and
+  per-region breakdown of the data (victim geography from email zones, and
+  breached-platform geography from service zones), computed from per-source
+  histograms so it stays instant at scale.
+- **On-demand indexing** (`--build-indexes` / `--drop-indexes`): bulk-load fast
+  with no secondary indexes, then build only the dimensions you need.
+- **Synthetic test data** generator (`tools/gen_test_formats.py`) covering 13
+  leak-format families, with a parser coverage harness (`tools/test_parser_formats.py`).
+- Fixes the `File` pathlib bug that broke the tool on **Python 3.12**.
+
+```bash
+# search examples
+./credshed-cli.py bob@example.com                 # email (auto-detected)
+./credshed-cli.py -q tld .ru --limit 50           # everyone in the .ru zone
+./credshed-cli.py -q service webex.com            # who had a Webex account
+./credshed-cli.py -q password 'Summer2024!'       # password reuse (reverse search)
+./credshed-cli.py -q phone +15551234567           # pivot a phone number
+./credshed-cli.py --tld-stats                      # regional breakdown
+./credshed-cli.py --unattended --ingest /leaks && ./credshed-cli.py --build-indexes
+```
+
 ## CLI Usage
 ~~~
 $ ./credshed-cli.py --help

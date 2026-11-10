@@ -12,6 +12,7 @@ from .source import *
 from .account import *
 from time import sleep
 from . import validation
+from . import regions
 from .config import config
 from datetime import datetime
 from multiprocessing import Manager
@@ -166,6 +167,53 @@ class DB():
 
 
 
+    def delete_source(self, source_id, **kwargs):
+        '''alias used by CredShed.delete_source()'''
+        return self.delete_leak(int(source_id), **kwargs)
+
+
+    def stats(self, accounts=True, sources=True, db=True, regions_limit=12):
+        '''
+        Human-readable database summary, including the new DFIR regional
+        breakdown.  Returned as a string (printed by `--db-stats`).
+        '''
+        lines = []
+        total_accounts = self.account_count()
+        total_sources = self.source_count()
+        lines.append('=' * 64)
+        lines.append(f'  CREDSHED DATABASE: {total_accounts:,} accounts across {total_sources:,} source(s)')
+        lines.append(f'  Secondary indexes: {", ".join(self.index_info())}')
+        lines.append('=' * 64)
+
+        if sources:
+            lines.append('\nSOURCES:')
+            for src in self.sources.find({}, {
+                    'source_id': 1, 'name': 1, 'total_accounts': 1,
+                    'parser_format': 1, 'login_types': 1, 'phone_count': 1,
+                    'import_finished': 1}).sort('source_id', 1):
+                lt = src.get('login_types', {}) or {}
+                flag = '' if src.get('import_finished', True) else '  [IMPORT INCOMPLETE]'
+                lines.append(
+                    f"  [{src.get('source_id','?'):>4}] {str(src.get('name',''))[:48]:48} "
+                    f"{src.get('total_accounts',0):>12,} acct  "
+                    f"fmt={src.get('parser_format','?') or '?':7} "
+                    f"(e:{lt.get('email',0):,} u:{lt.get('username',0):,} "
+                    f"p:{lt.get('phone',0):,}){flag}")
+
+        if db and total_accounts:
+            rs = self.region_stats(target='email')
+            if rs['regions']:
+                lines.append('\nTOP EMAIL-DOMAIN REGIONS (victim geography):')
+                for region, count in rs['regions'][:regions_limit]:
+                    bar = '#' * int(40 * count / max(1, rs['regions'][0][1]))
+                    lines.append(f"  {region:30} {count:>12,}  {bar}")
+                lines.append('\nTOP COUNTRIES (by email domain zone):')
+                for country, count in rs['countries'][:regions_limit]:
+                    lines.append(f"  {country:30} {count:>12,}")
+        lines.append('')
+        return '\n'.join(lines)
+
+
     def _build_query(self, keyword, query_type='email'):
 
 
@@ -198,18 +246,233 @@ class DB():
                 # or if query is like "example.com"
                 query_regex = rf'^{domain}[\.\|]'
 
-            num_sections = len(domain.split('.'))
             query = {'_id': {'$regex': query_regex}}
 
+        elif query_type == 'tld':
+            # domain-zone search on the EMAIL domain (victim geography), e.g. ".ru"
+            # _id starts with the reversed email domain, so the zone is a reversed prefix
+            zone = keyword.strip().lower().lstrip('.')
+            rev = re.escape(zone[::-1])
+            query = {'_id': {'$regex': rf'^{rev}\.'}}
+
         elif query_type == 'username':
-            query_regex = rf'^{re.escape(keyword)}$'
-            query = {'u': {'$regex': query_regex}}
+            # exact match (index-friendly).  A purely numeric login may have been
+            # routed to the phone field, so match either for numeric pivots.
+            if keyword.isdigit():
+                query = {'$or': [{'u': keyword}, {'t': keyword}]}
+            else:
+                query = {'u': keyword}
+
+        elif query_type == 'password':
+            # reverse search: "who used this password?"
+            query = {'p': keyword}
+
+        elif query_type == 'phone':
+            norm = validation.normalize_phone(keyword)
+            if not norm:
+                raise CredShedError(f'Invalid phone number: "{keyword}"')
+            # a bare numeric login may sit in the username field; match either
+            query = {'$or': [{'t': norm}, {'u': norm}]}
+
+        elif query_type == 'service':
+            kw = keyword.strip().lower()
+            if kw.startswith('.'):
+                # service-zone query, e.g. "-q service .ru"
+                rev = re.escape(kw.lstrip('.')[::-1])
+                query = {'v': {'$regex': rf'^{rev}\.'}}
+            else:
+                # service host: the host itself OR any of its subdomains.
+                # Split into an exact match + an anchored "host." prefix regex so
+                # BOTH arms get index bounds (a single ^...(?:\.|$) regex does not).
+                host = validation.extract_host(kw)
+                rev = host[::-1]
+                query = {'$or': [
+                    {'v': rev},
+                    {'v': {'$regex': rf'^{re.escape(rev)}\.'}},
+                ]}
 
         else:
             raise CredShedError(f'Invalid query type: {query_type}')
 
         log.debug(f'Raw mongo query: {query}')
         return query
+
+
+    # DFIR enhancement: index management.  Bulk-load with no secondary indexes
+    # (fast writes), then build only the dimensions a given engagement needs.
+    SECONDARY_INDEX_FIELDS = {
+        'u': 'username', 'p': 'password', 't': 'phone', 'v': 'service',
+    }
+
+    def build_indexes(self, fields=None):
+        '''
+        Build secondary indexes for the given doc-field keys (default: all of
+        u/p/t/v).  Returns the list of fields indexed.  Sparse, because most
+        docs only populate a subset of these.
+        '''
+        if fields is None:
+            fields = list(self.SECONDARY_INDEX_FIELDS)
+        built = []
+        for f in fields:
+            name = f'idx_{f}'
+            log.info(f'Building index "{name}" on accounts.{f} '
+                     f'({self.SECONDARY_INDEX_FIELDS.get(f, f)}) ...')
+            self._op(self.accounts.create_index, [(f, pymongo.ASCENDING)],
+                     name=name, sparse=True)
+            built.append(f)
+        log.info(f'Built {len(built)} index(es): {built}')
+        return built
+
+    def drop_secondary_indexes(self):
+        dropped = []
+        for ix in self.accounts.list_indexes():
+            if ix['name'] != '_id_':
+                self.accounts.drop_index(ix['name'])
+                dropped.append(ix['name'])
+        return dropped
+
+    def index_info(self):
+        try:
+            return [ix['name'] for ix in self.accounts.list_indexes()]
+        except pymongo.errors.PyMongoError:
+            return ['_id_']
+
+
+    @staticmethod
+    def _escape_keys(d):
+        # Mongo field names can't contain '.' or NUL, or start with '$'.
+        # Use a reversible marker-escape ('~') so the round-trip is lossless and
+        # collision-free even for dirty service hosts (keys double as stat labels).
+        def esc(k):
+            k = validation.control_chars_re.sub('', str(k))
+            return k.replace('~', '~t').replace('.', '~d').replace('$', '~s')
+        return {esc(k): v for k, v in d.items() if k}
+
+    @staticmethod
+    def _unescape_keys(d):
+        def unesc(k):
+            # reverse order: decode '.' and '$' first, then the '~' marker last
+            return k.replace('~d', '.').replace('~s', '$').replace('~t', '~')
+        return {unesc(k): v for k, v in (d or {}).items()}
+
+
+    def tld_stats(self, target='email', limit=None):
+        '''
+        DB-wide domain-zone histogram, assembled from the per-source histograms
+        stored in the `sources` collection (no account scan required).
+
+        target: 'email'   -> victim geography (email-domain zones)
+                'service' -> breached-service zones
+        Returns a list of (tld, count) sorted descending.
+        '''
+        field = 'service_tld_hist' if target == 'service' else 'email_tld_hist'
+        agg = {}
+        for src in self.sources.find({}, {field: 1}):
+            for k, v in self._unescape_keys(src.get(field, {})).items():
+                agg[k] = agg.get(k, 0) + int(v)
+        items = sorted(agg.items(), key=lambda x: x[1], reverse=True)
+        return items[:limit] if limit else items
+
+    def global_summary(self, top_n=15):
+        '''
+        One fast, account-scan-free snapshot of the whole database, assembled
+        purely from the per-source histograms in the `sources` collection.
+        Powers the statistics dashboard.
+        '''
+        totals = {'accounts': 0, 'sources': 0, 'email': 0, 'username': 0,
+                  'phone': 0, 'with_password': 0, 'with_hash': 0, 'with_service': 0,
+                  'filesize': 0}
+        domains, services, email_tld, service_tld = {}, {}, {}, {}
+        pw_words, formats = {}, {}
+        sources = []
+
+        for s in self.sources.find({}):
+            totals['sources'] += 1
+            n = int(s.get('total_accounts', 0) or 0)
+            totals['accounts'] += n
+            lt = s.get('login_types', {}) or {}
+            totals['email'] += int(lt.get('email', 0) or 0)
+            totals['username'] += int(lt.get('username', 0) or 0)
+            totals['phone'] += int(s.get('phone_count', 0) or 0)
+            totals['with_password'] += int(s.get('with_password', 0) or 0)
+            totals['with_hash'] += int(s.get('with_hash', 0) or 0)
+            totals['with_service'] += int(s.get('with_service', 0) or 0)
+            totals['filesize'] += int(s.get('filesize', 0) or 0)
+            fmt = s.get('parser_format') or 'unknown'
+            formats[fmt] = formats.get(fmt, 0) + n
+
+            def merge(dst, field):
+                for k, v in self._unescape_keys(s.get(field, {})).items():
+                    dst[k] = dst.get(k, 0) + int(v)
+            merge(domains, 'top_domains')
+            merge(services, 'top_services')
+            merge(email_tld, 'email_tld_hist')
+            merge(service_tld, 'service_tld_hist')
+            for k, v in (s.get('top_password_basewords', {}) or {}).items():
+                pw_words[k] = pw_words.get(k, 0) + int(v)
+
+            sources.append({
+                'source_id': s.get('source_id'),
+                'name': str(s.get('name', ''))[-60:],
+                'total_accounts': n,
+                'parser_format': fmt,
+                'login_types': {'email': int(lt.get('email', 0) or 0),
+                                'username': int(lt.get('username', 0) or 0),
+                                'phone': int(s.get('phone_count', 0) or 0)},
+                'with_password': int(s.get('with_password', 0) or 0),
+                'with_service': int(s.get('with_service', 0) or 0),
+                'import_finished': s.get('import_finished', True),
+            })
+
+        def top(d):
+            return sorted(d.items(), key=lambda x: x[1], reverse=True)[:top_n]
+
+        return {
+            'totals': totals,
+            'indexes': self.index_info(),
+            'formats': sorted(formats.items(), key=lambda x: x[1], reverse=True),
+            'sources': sorted(sources, key=lambda x: x.get('source_id') or 0),
+            'top_domains': top(domains),
+            'top_services': top(services),
+            'top_password_basewords': top(pw_words),
+            'regions_email': self._regions_from_hist(email_tld),
+            'regions_service': self._regions_from_hist(service_tld),
+        }
+
+    def _regions_from_hist(self, hist, zones_top=60):
+        '''roll a {tld: count} histogram up into zones/countries/regions'''
+        countries, region_rollup = {}, {}
+        for tld, count in hist.items():
+            country, region = regions.region_of(tld)
+            label = country if country else (f'.{tld}' if tld else 'unknown')
+            countries[label] = countries.get(label, 0) + count
+            region_rollup[region] = region_rollup.get(region, 0) + count
+        srt = lambda d: sorted(d.items(), key=lambda x: x[1], reverse=True)
+        return {
+            'zones': srt(hist)[:zones_top],
+            'countries': srt(countries),
+            'regions': srt(region_rollup),
+        }
+
+    def region_stats(self, target='email'):
+        '''
+        Roll the zone histogram up into (country, region) buckets for a
+        human-readable regional breakdown.  Returns dict with 'zones',
+        'countries', 'regions' (each a sorted list of (name, count)).
+        '''
+        zones = self.tld_stats(target=target)
+        countries = {}
+        region_rollup = {}
+        for tld, count in zones:
+            country, region = regions.region_of(tld)
+            label = country if country else (f'.{tld}' if tld else 'unknown')
+            countries[label] = countries.get(label, 0) + count
+            region_rollup[region] = region_rollup.get(region, 0) + count
+        return {
+            'zones': zones,
+            'countries': sorted(countries.items(), key=lambda x: x[1], reverse=True),
+            'regions': sorted(region_rollup.items(), key=lambda x: x[1], reverse=True),
+        }
 
 
 
@@ -357,10 +620,16 @@ class DB():
 
         log.info('\nDeleting leak "{}{}"'.format(source.name, ':{}'.format(source.hashtype) if source.hashtype else ''))
 
+        # make the source-membership scans below use an index instead of COLLSCAN
+        try:
+            self.accounts.create_index([('s', pymongo.ASCENDING)], name='idx_s', sparse=True)
+        except pymongo.errors.PyMongoError:
+            pass
+
         try:
 
-            # delete accounts
-            for result in self.accounts_metadata.find({'s': [source_id]}, {'_id': 1}):
+            # delete accounts that belong ONLY to this source
+            for result in self.accounts.find({'s': [source_id]}, {'_id': 1}):
                 to_delete.append(pymongo.DeleteOne(result))
                 if len(to_delete) % batch_size == 0:
                     accounts_deleted += self.accounts.bulk_write(to_delete, ordered=False).deleted_count
@@ -370,10 +639,8 @@ class DB():
             if to_delete:
                 accounts_deleted += self.accounts.bulk_write(to_delete, ordered=False).deleted_count
 
-            # delete out of tags collection
-            self.accounts_metadata.delete_many({'s': [source_id]})
-            # pull source ID from affected accounts
-            self.accounts_metadata.update_many({'s': source_id}, {'$pull': {'s': source_id}})
+            # for accounts shared with other sources, just pull this source ID
+            self.accounts.update_many({'s': source_id}, {'$pull': {'s': source_id}})
 
             errprint('\r[+] Deleted {:,} accounts'.format(accounts_deleted), end='')
 
@@ -424,11 +691,19 @@ class DB():
             'files': [str(source.file)],
             'filesize': source.file.size,
             'description': source.description,
-            'top_domains': {
-                k.replace('.', '|'): v for k,v in source.top_domains(100).items()
-            },
+            'top_domains': self._escape_keys(source.top_domains(100)),
             'top_misc_basewords': source.top_misc_basewords(100),
             'top_password_basewords': source.top_password_basewords(100),
+            # DFIR enhancement: per-source histograms powering fast regional / service stats
+            'top_services': self._escape_keys(source.top_services(100)),
+            'email_tld_hist': self._escape_keys(source.email_tld_histogram()),
+            'service_tld_hist': self._escape_keys(source.service_tld_histogram()),
+            'login_types': source.login_types,
+            'phone_count': source.phone_count,
+            'with_password': source.with_password,
+            'with_hash': source.with_hash,
+            'with_service': source.with_service,
+            'parser_format': getattr(source.parser, 'format', None),
             'created_date': datetime.now(),
             'modified_date': datetime.now(),
             'total_accounts': source.total_accounts,
@@ -498,9 +773,19 @@ class DB():
                 sources.update_one,
                 {'_id': source.hash}, {
                     '$set': {
-                        'top_domains': source.top_domains(100),
+                        'top_domains': self._escape_keys(source.top_domains(100)),
                         'top_misc_basewords': source.top_misc_basewords(100),
                         'top_password_basewords': source.top_password_basewords(100),
+                        'top_services': self._escape_keys(source.top_services(100)),
+                        'email_tld_hist': self._escape_keys(source.email_tld_histogram()),
+                        'service_tld_hist': self._escape_keys(source.service_tld_histogram()),
+                        'login_types': source.login_types,
+                        'phone_count': source.phone_count,
+                        'with_password': source.with_password,
+                        'with_hash': source.with_hash,
+                        'with_service': source.with_service,
+                        'parser_format': getattr(source.parser, 'format', None),
+                        'total_accounts': source.total_accounts,
                         'import_finished': True
                     }
                 }

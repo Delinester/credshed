@@ -14,6 +14,7 @@ from pathlib import Path
 import concurrent.futures
 from lib.credshed import *
 from lib import validation
+from lib import regions
 from lib.parser import File
 from lib.processpool import *
 from datetime import datetime
@@ -58,47 +59,115 @@ class CredShedCLI(CredShed):
         super().__init__()
         self.options = options
 
+    @staticmethod
+    def format_account(a):
+        '''readable, field-labeled one-line rendering for DFIR triage'''
+        parts = []
+        if a.email:
+            parts.append(a.email)
+        if a.username:
+            parts.append(f'user={a.username}')
+        if a.phone:
+            parts.append(f'tel={a.phone}')
+        if a.password:
+            parts.append(f'pass={a.password}')
+        if a.hashes:
+            parts.append(f'hash={a.formatted_hashes}')
+        if a.service:
+            parts.append(f'@ {a.service}')
+        if a.misc:
+            parts.append(f'misc={a.misc[:80]}')
+        if a.sources:
+            parts.append(f'src={",".join(str(s) for s in a.sources)}')
+        return '  '.join(parts)
+
+    def _emit(self, account):
+        if self.options.print0:
+            sys.stdout.buffer.write(account.bytes + b'\n')
+        elif getattr(self.options, 'json', False):
+            import json as _json
+            print(_json.dumps(account.json, ensure_ascii=False))
+        elif getattr(self.options, 'colons', False):
+            print(str(account))
+        else:
+            print(self.format_account(account))
+
     def search(self):
 
         start_time = datetime.now()
         num_accounts_in_db = self.db.account_count()
 
-        if not self.options.limit == -1:
-            left = int(self.options.limit) - 1
-        else:
-            left = 0
+        # limit == -1 means unlimited
+        limit = int(self.options.limit)
+        remaining = None if limit < 0 else limit
 
         num_results = 0
         for keyword in self.options.search:
-            if self.options.limit == -1 or left > 0:
+            if remaining is not None and remaining <= 0:
+                break
+            try:
                 query_type = validation.validate_query_type(keyword, self.options.query_type)
-                log.info(f'Searching by {query_type}: {keyword}')
+            except CredShedValidationError as e:
+                log.error(str(e))
+                continue
+            log.info(f'Searching by {query_type}: {keyword}')
 
-                for account in super().search(keyword, limit=left):
-                    if self.options.print0:
-                        sys.stdout.buffer.write(account.bytes + b'\n')
-                    else:
-                        print(str(account))
-                    num_results += 1
-                    if self.options.limit > 0:
-                        if left <= 0:
-                            break
-                        left -= 1
+            per_query_limit = 0 if remaining is None else remaining
+            for account in super().search(keyword, query_type=query_type, limit=per_query_limit):
+                self._emit(account)
+                num_results += 1
+                if remaining is not None:
+                    remaining -= 1
+                    if remaining <= 0:
+                        break
 
         end_time = datetime.now()
         time_elapsed = (end_time - start_time)
         log.info(f'Searched {num_accounts_in_db:,} accounts in {str(time_elapsed)[:-4]} seconds')
-        if options.limit > 0:
-            total_count = 0
-            for keyword in self.options.search:
-                total_count += self.count(keyword, self.options.query_type)
-            if total_count >= 10000:
-                total_count = f'{max(total_count, num_results):,}+'
-            else:
-                total_count = f'{total_count:,}'
-            log.info(f'Showing {num_results:,}/{total_count} results')
-        else:
-            log.info(f'{num_results:,} results for "{" + ".join(self.options.search)}"')
+
+        # Report counts WITHOUT a second full scan: for an unlimited search the
+        # number returned IS the exact total; for a limited one we only know we
+        # hit the cap (show N+), otherwise N is exact.
+        hit_limit = (remaining is not None and remaining <= 0)
+        count_str = f'{num_results:,}+' if hit_limit else f'{num_results:,}'
+        log.info(f'{count_str} results for "{" + ".join(self.options.search)}"')
+
+
+    def region_stats(self):
+        '''--tld-stats / --region-stats : domain-zone + regional breakdown'''
+        target = getattr(self.options, 'tld_stats', 'email') or 'email'
+        rs = super().region_stats(target=target)
+        label = 'EMAIL-DOMAIN (victim geography)' if target == 'email' else 'BREACHED-SERVICE'
+        print('=' * 64)
+        print(f'  DOMAIN-ZONE / REGIONAL STATISTICS  [{label}]')
+        print('=' * 64)
+        if not rs['zones']:
+            print('  (no data - ingest some sources first)')
+            return
+        top = rs['regions'][0][1] if rs['regions'] else 1
+        print('\n  By region:')
+        for region, count in rs['regions']:
+            bar = '#' * int(44 * count / max(1, top))
+            print(f'    {region:34} {count:>12,}  {bar}')
+        print('\n  Top countries (ccTLD):')
+        for country, count in rs['countries'][:25]:
+            print(f'    {country:34} {count:>12,}')
+        print('\n  Top zones (raw TLD):')
+        for tld, count in rs['zones'][:25]:
+            c, r = regions.region_of(tld)
+            tag = f'  ({c})' if c else ''
+            print(f'    .{tld:33} {count:>12,}{tag}')
+        print()
+
+
+    def index_ops(self):
+        if self.options.drop_indexes:
+            dropped = super().drop_indexes()
+            log.info(f'Dropped indexes: {dropped}')
+        if self.options.build_indexes is not None:
+            fields = self.options.build_indexes or None
+            built = super().build_indexes(fields)
+            log.info(f'Built indexes on fields: {built}')
 
 
     def query_stats(self):
@@ -347,6 +416,13 @@ def main(options):
             elif options.search:
                 credshed.search()
 
+            # DFIR enhancement operations
+            if options.build_indexes is not None or options.drop_indexes:
+                credshed.index_ops()
+
+            if options.tld_stats:
+                credshed.region_stats()
+
             if options.db_stats:
                 credshed.db_stats()
 
@@ -377,7 +453,13 @@ if __name__ == '__main__':
     default_threads = min(6, max(2, int(num_cores)))
 
     parser.add_argument('search',                       nargs='*',                      help='search term(s)')
-    parser.add_argument('-q', '--query-type',           default='auto',                 help='query type (email, domain, or username)')
+    parser.add_argument('-q', '--query-type',           default='auto',                 help='query type: email, domain, tld/zone, username, password, phone, service (auto-detected by default)')
+    parser.add_argument('--tld-stats', nargs='?', const='email', choices=['email', 'service'], metavar='TARGET',
+                                                                                        help='show domain-zone / regional statistics (email=victim geography [default], service=breached platform)')
+    parser.add_argument('--build-indexes', nargs='*', metavar='FIELD',                  help='build secondary search indexes then exit (fields: u p t v; default all). Run after a bulk ingest.')
+    parser.add_argument('--drop-indexes', action='store_true',                          help='drop secondary search indexes (faster bulk ingest)')
+    parser.add_argument('--json', action='store_true',                                  help='output search results as JSON lines')
+    parser.add_argument('--colons', action='store_true',                                help='output results in legacy colon format (email:user:pass:hash:misc:phone:service)')
     parser.add_argument('-i', '--ingest',   type=Path,  nargs='+',                      help='import files or directories into the database')
     parser.add_argument('-f', '--force-ingest',         action='store_true',            help='also ingest files which have already been imported')
     parser.add_argument('-db', '--db-stats', action='store_true',                       help='show all imported leaks and DB stats')

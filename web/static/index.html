@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Credshed Statistics</title>
+<meta name="description" content="Aggregate statistics dashboard for a credshed breach-intelligence database — totals, regional breakdown, top services and domains. Statistics only; no credential data.">
+<style>
+  :root{
+    color-scheme: light;
+    --plane:#f9f9f7; --surface:#fcfcfb; --surface-2:#f4f4f1;
+    --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
+    --grid:#e1e0d9; --baseline:#c3c2b7; --border:rgba(11,11,11,.10);
+    --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4;
+    --track:#eceae3; --good:#0ca30c;
+    --shadow:0 1px 2px rgba(11,11,11,.04), 0 2px 10px rgba(11,11,11,.05);
+    --r:14px;
+  }
+  @media (prefers-color-scheme: dark){ :root:where(:not([data-theme="light"])){
+    color-scheme: dark;
+    --plane:#0d0d0d; --surface:#1a1a19; --surface-2:#222221;
+    --ink:#f0efec; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --baseline:#383835; --border:rgba(255,255,255,.10);
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181;
+    --track:#2a2a28; --good:#0ca30c;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 2px 12px rgba(0,0,0,.35);
+  }}
+  :root[data-theme="dark"]{
+    color-scheme: dark;
+    --plane:#0d0d0d; --surface:#1a1a19; --surface-2:#222221;
+    --ink:#f0efec; --ink-2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --baseline:#383835; --border:rgba(255,255,255,.10);
+    --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181;
+    --track:#2a2a28; --good:#0ca30c;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 2px 12px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--plane); color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+    font-size:15px; line-height:1.45; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1180px; margin:0 auto; padding:0 16px 64px}
+  a{color:var(--s1)}
+  .tnum{font-variant-numeric:tabular-nums}
+
+  /* header */
+  header{position:sticky; top:0; z-index:10; background:color-mix(in srgb,var(--plane) 86%, transparent);
+    backdrop-filter:saturate(1.3) blur(8px); border-bottom:1px solid var(--border)}
+  .hd{max-width:1180px; margin:0 auto; padding:14px 16px; display:flex; align-items:center; gap:14px; flex-wrap:wrap}
+  .brand{display:flex; align-items:baseline; gap:10px}
+  .logo{font-weight:800; letter-spacing:.14em; text-transform:uppercase; font-size:15px}
+  .logo b{color:var(--s1)}
+  .sub{color:var(--muted); font-size:12.5px}
+  .spacer{flex:1}
+  .pill{font-size:11.5px; color:var(--ink-2); background:var(--surface-2); border:1px solid var(--border);
+    padding:4px 9px; border-radius:999px; display:inline-flex; align-items:center; gap:6px}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--good)}
+  .dot.sample{background:var(--s4)}
+  button{font:inherit; color:var(--ink); background:var(--surface); border:1px solid var(--border);
+    border-radius:9px; padding:6px 11px; cursor:pointer; box-shadow:var(--shadow)}
+  button:hover{background:var(--surface-2)}
+  .ttl{margin:26px 2px 2px; font-size:13px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); font-weight:700}
+
+  /* stat tiles */
+  .tiles{display:grid; grid-template-columns:repeat(auto-fit,minmax(168px,1fr)); gap:14px; margin-top:12px}
+  .tile{background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:16px 16px 14px; box-shadow:var(--shadow)}
+  .tile .k{font-size:12px; color:var(--ink-2); display:flex; align-items:center; gap:7px}
+  .tile .v{font-size:30px; font-weight:750; margin-top:7px; letter-spacing:-.01em}
+  .tile .x{font-size:12px; color:var(--muted); margin-top:3px}
+  .swatch{width:9px;height:9px;border-radius:2px;flex:none}
+
+  /* card grid */
+  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:16px; margin-top:14px}
+  .card{background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:16px 16px 14px; box-shadow:var(--shadow); min-width:0}
+  .card.wide{grid-column:1 / -1}
+  @media(min-width:760px){ .card.span2{grid-column:span 2} }
+  .card h3{margin:0 0 2px; font-size:14.5px; font-weight:680}
+  .card .note{color:var(--muted); font-size:12px; margin:0 0 12px}
+  .seg-ctl{display:inline-flex; background:var(--surface-2); border:1px solid var(--border); border-radius:8px; overflow:hidden; margin-left:auto}
+  .seg-ctl button{border:0; border-radius:0; box-shadow:none; background:transparent; padding:4px 10px; font-size:12.5px; color:var(--ink-2)}
+  .seg-ctl button[aria-pressed="true"]{background:var(--s1); color:#fff}
+  .rowtop{display:flex; align-items:center; gap:10px}
+
+  /* bar list */
+  .bars{display:flex; flex-direction:column; gap:7px; margin-top:4px}
+  .brow{display:grid; grid-template-columns:minmax(96px,34%) 1fr auto; align-items:center; gap:10px; padding:2px 4px; border-radius:7px}
+  .brow:hover{background:var(--surface-2)}
+  .blabel{font-size:12.5px; color:var(--ink-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .btrack{height:12px; background:var(--track); border-radius:4px; overflow:hidden}
+  .bfill{height:100%; background:var(--s1); border-radius:4px; min-width:3px; transition:width .5s cubic-bezier(.2,.7,.2,1)}
+  .bval{font-size:12.5px; color:var(--ink); min-width:62px; text-align:right}
+  .bpct{color:var(--muted); font-size:11px; margin-left:5px}
+
+  /* stacked composition */
+  .stack{display:flex; height:30px; border-radius:7px; overflow:hidden; background:var(--track); gap:2px; margin:6px 0 12px}
+  .stack .seg{min-width:2px; transition:width .5s cubic-bezier(.2,.7,.2,1)}
+  .legend{display:flex; flex-wrap:wrap; gap:14px}
+  .legend .li{display:flex; align-items:center; gap:7px; font-size:12.5px; color:var(--ink-2)}
+  .legend .li b{color:var(--ink); font-weight:650}
+
+  /* table */
+  table{width:100%; border-collapse:collapse; font-size:13px}
+  th,td{text-align:left; padding:9px 10px; border-bottom:1px solid var(--border)}
+  th{color:var(--muted); font-weight:650; font-size:11.5px; letter-spacing:.04em; text-transform:uppercase}
+  td.num,th.num{text-align:right}
+  tbody tr:hover{background:var(--surface-2)}
+  .fmt{font-size:11px; background:var(--surface-2); border:1px solid var(--border); padding:1px 7px; border-radius:999px; color:var(--ink-2)}
+  footer{margin-top:30px; color:var(--muted); font-size:12px; text-align:center}
+  .err{color:var(--s2)}
+</style>
+</head>
+<body>
+<header>
+  <div class="hd">
+    <div class="brand">
+      <span class="logo">cred<b>shed</b></span>
+      <span class="sub">breach-intelligence statistics</span>
+    </div>
+    <div class="spacer"></div>
+    <span id="status" class="pill"><span class="dot"></span><span id="statusText">loading…</span></span>
+    <button id="refresh" title="Reload statistics">↻ Refresh</button>
+    <button id="theme" title="Toggle light / dark">◐ Theme</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="ttl">Overview</div>
+  <section class="tiles" id="tiles"></section>
+
+  <div class="ttl">Composition</div>
+  <section class="grid">
+    <div class="card">
+      <h3>Login identity</h3>
+      <p class="note">How the breached records identify their owner.</p>
+      <div id="loginStack" class="stack"></div>
+      <div id="loginLegend" class="legend"></div>
+    </div>
+    <div class="card">
+      <h3>Field coverage</h3>
+      <p class="note">Share of records populating each field.</p>
+      <div id="coverage" class="bars"></div>
+    </div>
+  </section>
+
+  <div class="ttl">Geography</div>
+  <section class="grid">
+    <div class="card span2">
+      <div class="rowtop">
+        <div><h3 style="margin-bottom:2px">Regional exposure</h3>
+        <p class="note" id="geoNote">By email-domain zone — a proxy for victim geography.</p></div>
+        <div class="seg-ctl" id="geoToggle">
+          <button data-t="email" aria-pressed="true">Victim (email)</button>
+          <button data-t="service" aria-pressed="false">Platform (service)</button>
+        </div>
+      </div>
+      <div class="grid" style="margin-top:4px; gap:16px">
+        <div><div class="note" style="margin:0 0 6px">By region</div><div id="geoRegions" class="bars"></div></div>
+        <div><div class="note" style="margin:0 0 6px">By country / zone</div><div id="geoCountries" class="bars"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="ttl">Top lists</div>
+  <section class="grid">
+    <div class="card"><h3>Breached services</h3><p class="note">Most common platforms in the data.</p><div id="topServices" class="bars"></div></div>
+    <div class="card"><h3>Email providers</h3><p class="note">Most common email domains.</p><div id="topDomains" class="bars"></div></div>
+    <div class="card"><h3>Password base-words</h3><p class="note">Most common roots in plaintext passwords.</p><div id="topPw" class="bars"></div></div>
+  </section>
+
+  <div class="ttl">Sources</div>
+  <section class="card wide" style="padding:6px 6px 2px; overflow-x:auto">
+    <table id="sources">
+      <thead><tr>
+        <th>#</th><th>Source</th><th class="fmtcol">Format</th>
+        <th class="num">Accounts</th><th class="num">Email</th><th class="num">Username</th>
+        <th class="num">Phone</th><th class="num">w/ password</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <footer>
+    Statistics only — this dashboard exposes aggregate numbers, never individual credentials.
+    <span id="asof"></span>
+  </footer>
+</div>
+
+<script>
+const SAMPLE = /*__SAMPLE__*/{"totals":{"accounts":16480271,"sources":3,"email":7202708,"username":8814695,"phone":462868,"with_password":16347771,"with_hash":8673,"with_service":16125657,"filesize":791748028},"indexes":["_id_","idx_u","idx_p","idx_t","idx_v"],"formats":[["ulp",16480271]],"sources":[{"source_id":2,"name":"/mnt/d/1_Credshed/datas/5.500.049.txt","total_accounts":5494952,"parser_format":"ulp","login_types":{"email":2296216,"username":3044586,"phone":154150},"with_password":5440099,"with_service":5416770,"import_finished":true},{"source_id":3,"name":"/mnt/d/1_Credshed/datas/5.500.037.txt","total_accounts":5489118,"parser_format":"ulp","login_types":{"email":2135334,"username":3211275,"phone":142509},"with_password":5472601,"with_service":5392789,"import_finished":true},{"source_id":4,"name":"/mnt/d/1_Credshed/datas/5.500.046.txt","total_accounts":5496201,"parser_format":"ulp","login_types":{"email":2771158,"username":2558834,"phone":166209},"with_password":5435071,"with_service":5316098,"import_finished":true}],"top_domains":[["gmail.com",4570746],["hotmail.com",529932],["yahoo.com",190829],["gmbol.cem",70482],["icloud.com",54691],["live.com",29536],["hotmail.fr",25688],["web.de",23397],["mail.ru",20047],["aol.com",18102],["libero.it",18020],["yahoo.fr",17236]],"top_services":[["accounts.google.com",628086],["login.live.com",241289],["roblox.com",240576],["discord.com",149705],["instagram.com",133975],["netflix.com",98460],["com.facebook.katana",91872],["paypal.com",81771],["amazon.com",78885],["login.microsoftonline.com",76985],["twitch.tv",71858],["google.com",68215]],"top_password_basewords":[["password",153461],["admin",109104],["com",92934],["gmail",26797],["abc",19438],["qwerty",16396],["asd",15018],["ahmed",12184],["abcd",11801],["pass",11767],["alex",11069],["ali",9829]],"regions_email":{"zones":[["com",5877892],["fr",136577],["de",111479],["net",99452],["cem",94373],["it",93055],["es",64071],["nl",63740],["com.br",51383],["co.uk",49977],["pl",36907],["ru",36658],["at",21313],["org",20083]],"countries":[[".com",5877892],["France",136577],["Germany",111479],[".net",99452],[".cem",94373],["Italy",93055],["Spain",64071],["Brazil",63749],["Netherlands",63740],["United Kingdom",55123],["Poland",36907],["Russia",36658],["India",23080],["Austria",21313]],"regions":[["Generic (gTLD)",6031687],["Western Europe",409889],["Southern Europe",169971],["Other / unknown",127244],["Latin America",121880],["Central Europe",81093],["Eastern Europe / CIS",39168],["Southeast Asia",29225],["East Asia",26235],["South Asia (often generic)",23080],["Southeast Asia (often generic)",17949],["Africa",17064],["Latin America (often generic)",16906],["Africa / North",14485],["North America",12266],["Middle East",11311],["Oceania",11145],["Baltics",10089],["Middle East / Gulf",9567],["Nordics",8470],["South Asia",7783],["Central Europe (often generic)",4596],["Caucasus",1016],["Central Asia",339],["Africa / North (often generic)",250]]},"regions_service":{"zones":[["com",8877851],["net",550494],["com.br",461984],["org",318289],["android",189129],["in",174993],["id",165888],["fr",152306],["it",144319],["co",144067],["gov.in",140927],["io",132945],["tv",131897],["es",113512]],"countries":[[".com",8877851],["Brazil",623106],[".net",550494],["India",367681],[".org",318289],["Indonesia",198375],[".android",189129],["France",152306],["Italy",144319],["Colombia",144067],[".io",132945],[".tv",131897],["Spain",113512],["Argentina",103633]],"regions":[["Generic (gTLD)",10439735],["Other / unknown",1752518],["Latin America",1035623],["Western Europe",397637],["South Asia (often generic)",367681],["Southern Europe",318292],["Central Europe",233016],["Southeast Asia",232147],["Southeast Asia (often generic)",198375],["Latin America (often generic)",144067],["Middle East",116103],["East Asia",109953],["Africa",106335],["South Asia",102212],["Eastern Europe / CIS",99012],["Oceania",95616],["North America",94995],["Africa / North",91855],["Middle East / Gulf",70180],["Central Europe (often generic)",49178],["Nordics",30245],["Baltics",19834],["Caucasus",8364],["Central Asia",6566],["Africa / North (often generic)",5879]]}}/*__/SAMPLE__*/;
+
+const $ = s => document.querySelector(s);
+const fmt = n => (n==null?'—':Number(n).toLocaleString('en-US'));
+const pct = (n,d) => d? (100*n/d) : 0;
+const bytesH = b => { if(!b) return '—'; const u=['B','KB','MB','GB','TB','PB']; let i=0; b=+b; while(b>=1024&&i<u.length-1){b/=1024;i++} return b.toFixed(b<10&&i>0?1:0)+' '+u[i]; };
+
+function barList(el, items, {max, fmtVal=fmt, total=null, color='var(--s1)'}={}){
+  const m = max || Math.max(1, ...items.map(d=>d[1]));
+  el.innerHTML = items.map(d=>{
+    const w = Math.max(2, 100*d[1]/m);
+    const p = total? `<span class="bpct">${pct(d[1],total).toFixed(pct(d[1],total)<1?2:0)}%</span>`:'';
+    const label = String(d[0]);
+    return `<div class="brow" title="${label}: ${fmtVal(d[1])}">
+      <div class="blabel">${label}</div>
+      <div class="btrack"><div class="bfill" style="width:${w}%;background:${color}"></div></div>
+      <div class="bval tnum">${fmtVal(d[1])}${p}</div></div>`;
+  }).join('');
+}
+
+function render(d){
+  const t = d.totals;
+  // tiles
+  const tiles = [
+    ['Accounts', fmt(t.accounts), `${fmt(d.sources.length)} source${d.sources.length!=1?'s':''} · ${bytesH(t.filesize)}`, 'var(--s1)'],
+    ['With breached service', fmt(t.with_service), `${pct(t.with_service,t.accounts).toFixed(0)}% of records`, 'var(--s3)'],
+    ['With password', fmt(t.with_password), `${pct(t.with_password,t.accounts).toFixed(0)}% plaintext`, 'var(--s1)'],
+    ['With phone', fmt(t.phone), `${pct(t.phone,t.accounts).toFixed(1)}% of records`, 'var(--s2)'],
+    ['With hash', fmt(t.with_hash), 'hashed secrets', 'var(--s5)'],
+    ['Indexed fields', String(d.indexes.filter(x=>x!=='_id_').length+1), d.indexes.join(', '), 'var(--s4)'],
+  ];
+  $('#tiles').innerHTML = tiles.map(([k,v,x,c])=>`<div class="tile">
+    <div class="k"><span class="swatch" style="background:${c}"></span>${k}</div>
+    <div class="v tnum">${v}</div><div class="x">${x}</div></div>`).join('');
+
+  // login identity stacked
+  const lt = [['Email', t.email, 'var(--s1)'],['Username', t.username, 'var(--s2)'],['Phone', t.phone, 'var(--s3)']];
+  const ltot = lt.reduce((a,b)=>a+b[1],0) || 1;
+  $('#loginStack').innerHTML = lt.map(([k,v,c])=>`<div class="seg" title="${k}: ${fmt(v)} (${pct(v,ltot).toFixed(1)}%)" style="width:${pct(v,ltot)}%;background:${c}"></div>`).join('');
+  $('#loginLegend').innerHTML = lt.map(([k,v,c])=>`<div class="li"><span class="swatch" style="background:${c}"></span>${k} <b class="tnum">${fmt(v)}</b> <span class="bpct">${pct(v,ltot).toFixed(1)}%</span></div>`).join('');
+
+  // field coverage
+  const cov = [['Email',t.email],['Username',t.username],['Password',t.with_password],['Service',t.with_service],['Phone',t.phone],['Hash',t.with_hash]];
+  barList($('#coverage'), cov, {max:t.accounts, total:t.accounts});
+
+  // top lists
+  barList($('#topServices'), d.top_services, {color:'var(--s1)'});
+  barList($('#topDomains'), d.top_domains, {color:'var(--s1)'});
+  barList($('#topPw'), d.top_password_basewords, {color:'var(--s5)'});
+
+  // geography toggle
+  const drawGeo = target=>{
+    const g = target==='service'? d.regions_service : d.regions_email;
+    $('#geoNote').textContent = target==='service'
+      ? 'By breached-service domain zone — geography of the affected platforms.'
+      : 'By email-domain zone — a proxy for victim geography.';
+    barList($('#geoRegions'), g.regions.slice(0,12));
+    barList($('#geoCountries'), g.countries.slice(0,12));
+    document.querySelectorAll('#geoToggle button').forEach(b=>b.setAttribute('aria-pressed', b.dataset.t===target));
+  };
+  drawGeo(window.__geo||'email');
+  document.querySelectorAll('#geoToggle button').forEach(b=>b.onclick=()=>{window.__geo=b.dataset.t; drawGeo(b.dataset.t);});
+
+  // sources table
+  $('#sources tbody').innerHTML = d.sources.map(s=>`<tr>
+    <td class="tnum">${s.source_id??'?'}</td>
+    <td title="${s.name}">${String(s.name).split('/').pop()}</td>
+    <td><span class="fmt">${s.parser_format||'?'}</span></td>
+    <td class="num tnum">${fmt(s.total_accounts)}</td>
+    <td class="num tnum">${fmt(s.login_types.email)}</td>
+    <td class="num tnum">${fmt(s.login_types.username)}</td>
+    <td class="num tnum">${fmt(s.login_types.phone)}</td>
+    <td class="num tnum">${fmt(s.with_password)}</td></tr>`).join('');
+}
+
+function setStatus(live){
+  $('#status').innerHTML = `<span class="dot ${live?'':'sample'}"></span><span id="statusText">${live?'live database':'sample data (backend offline)'}</span>`;
+  $('#asof').textContent = ' · ' + new Date().toLocaleString();
+}
+
+async function load(){
+  // paint embedded data immediately so there is never a blank screen…
+  if(SAMPLE){ render(SAMPLE); setStatus(false); }
+  else { $('#statusText').textContent='loading…'; }
+  // …then upgrade to the live backend if it answers
+  try{
+    const ctl = new AbortController(); const to=setTimeout(()=>ctl.abort(),4000);
+    const r = await fetch('api/summary',{signal:ctl.signal}); clearTimeout(to);
+    if(!r.ok) throw new Error('http '+r.status);
+    const d = await r.json();
+    if(d.error) throw new Error(d.error);
+    render(d); setStatus(true);
+  }catch(e){
+    if(!SAMPLE) $('#tiles').innerHTML = `<div class="tile err">Backend unreachable: ${e.message}</div>`;
+  }
+}
+
+// theme toggle: auto -> light -> dark -> auto
+(function(){
+  let mode = 'auto';
+  try{ mode = localStorage.getItem('cs-theme')||'auto'; }catch(e){}
+  const apply = m => { document.documentElement.setAttribute('data-theme', m); try{localStorage.setItem('cs-theme',m)}catch(e){} };
+  apply(mode);
+  $('#theme').onclick = ()=>{ mode = mode==='auto'?'light':mode==='light'?'dark':'auto'; apply(mode); };
+})();
+$('#refresh').onclick = load;
+load();
+</script>
+</body>
+</html>

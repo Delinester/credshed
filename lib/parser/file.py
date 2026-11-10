@@ -12,17 +12,19 @@ class File(type(pathlib.Path())):
 
     default_encoding = 'utf-8'
 
-    def __new__(cls, filename, *args, **kwargs):
+    # NOTE: Python 3.12 reworked pathlib so the old __new__-based construction
+    # (passing a pre-built path into cls()) collapses the path to '.'.  We now
+    # resolve in __init__ and use with_segments() so pathlib's own derivations
+    # (parent, relative_to, iterdir, ...) don't get re-resolved.
+    def __init__(self, *args, parse=True, _resolve=True):
 
-        if type(filename) == cls:
-            f = filename
+        if args and _resolve:
+            try:
+                super().__init__(str(pathlib.Path(*args).resolve()))
+            except (OSError, ValueError, TypeError):
+                super().__init__(*args)
         else:
-            f = cls(super().__new__(cls, pathlib.Path(filename).resolve()), *args, **kwargs)
-
-        return f
-
-
-    def __init__(self, filename, parse=True):
+            super().__init__(*args)
 
         self._magic_type = None
         self._encoding = None
@@ -31,7 +33,9 @@ class File(type(pathlib.Path())):
 
         self._hashes = dict()
 
-        super().__init__()
+    def with_segments(self, *pathsegments):
+        # used internally by pathlib to build derived paths; keep them raw
+        return type(self)(*pathsegments, _resolve=False)
 
 
     @property
@@ -232,7 +236,7 @@ class File(type(pathlib.Path())):
 
     def __iter__(self):
 
-        assert self.is_file(), f'Cannot open {filename} as file'
+        assert self.is_file(), f'Cannot open {self} as file'
 
         insert_into = 'INSERT INTO'
         sql_insert = False

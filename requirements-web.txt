@@ -1,0 +1,3 @@
+# Web statistics dashboard (optional; core tool does not require these)
+fastapi>=0.110
+uvicorn[standard]>=0.29

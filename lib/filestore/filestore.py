@@ -143,9 +143,9 @@ class Filestore():
                 for file in files:
                     if not dry_run:
                         combined_filename = self.dir / f'{prefix}{file.suffix}'
-                        header = b'\n\n\{CREDSHED.COMBINED:' + \
+                        header = b'\n\n{CREDSHED.COMBINED:' + \
                             str(file.relative_to(self.dir)).encode('utf-8', errors='ignore') + \
-                            b'\}\n\n'
+                            b'}\n\n'
                         with open(combined_filename, 'ab') as w:
                             w.write(header)
                             with open(file, 'rb') as r:

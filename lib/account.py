@@ -1,4 +1,5 @@
 # by TheTechromancer
+# DFIR enhancement: added phone + service(URL) fields for stealer-log / ULP data
 
 import base64
 import hashlib
@@ -11,9 +12,9 @@ from . import validation
 class Account():
 
     # cut down on memory usage by not using a dictionary
-    __slots__ = ['_id', '_email', 'domain', 'username', 'password', 'hashes', 'misc', 'sources']
+    __slots__ = ['_id', '_email', 'domain', 'username', 'password', 'hashes', 'misc', 'sources', 'phone', 'service']
 
-    # max length for email, domain, username, and password
+    # max length for email, domain, username, password, phone, service
     max_length_1 = 127
     # max length for hash, misc
     max_length_2 = 1023
@@ -21,7 +22,7 @@ class Account():
     # translation table to strip bad characters from username
     strip_from_username = str.maketrans('', '', "'\\")
 
-    def __init__(self, email='', username='', password='', hashes=[], misc='', sources=[]):
+    def __init__(self, email='', username='', password='', hashes=[], misc='', sources=[], phone='', service=''):
 
         # validate types
         if type(hashes) == str:
@@ -46,8 +47,15 @@ class Account():
         self.misc = ''
         self.hashes = []
         self.sources = sources
+        self.phone = ''
+        self.service = ''
 
-        self.set_email(email)
+        try:
+            self.set_email(email)
+        except AccountCreationError:
+            # keep going - the account may be valid on username/phone alone
+            self._email = ''
+            self.domain = ''
 
         # sanitize username
         self.username = username.strip().translate(self.strip_from_username)[:self.max_length_1]
@@ -59,10 +67,25 @@ class Account():
             if h not in self.hashes:
                 self.hashes.append(h[:self.max_length_2])
 
+        # phone: store bare normalized digits (country code preserved)
+        if phone:
+            self.phone = validation.normalize_phone(phone)[:self.max_length_1]
+
+        # service: normalized hostname of the breached site (ULP "URL" field)
+        if service:
+            self.service = validation.extract_host(service)[:self.max_length_1]
+
         # if username is an email address, do the needful
         if not self._email:
             if validation.is_email(self.username):
                 self.set_email(self.username)
+                self.username = ''
+
+        # if the username is actually a phone number and we have no phone yet, route it
+        if not self.phone and self.username and validation.is_phone(self.username):
+            normalized = validation.normalize_phone(self.username)
+            if normalized:
+                self.phone = normalized[:self.max_length_1]
                 self.username = ''
 
         # if password is hashed, put it in hash field
@@ -75,10 +98,19 @@ class Account():
         if not self.misc and len(self.password) >= self.max_length_1:
             self.password, self.misc = '', self.password
 
-        # keeping an email by itself is sometimes useful
-        # if not strictly for OSINT purposes, at least knowing which leaks it was a part of
-        # allows searching for additional information in the raw dump
-        if not (self._email or (self.username and (self.password or self.misc or self.hashes))):
+        # An account is worth keeping if:
+        #   - we have an email (useful even by itself, for OSINT / leak membership), OR
+        #   - we have a username or phone AND some secret (password/hash/misc) or service context
+        has_identity = bool(self._email or self.username or self.phone)
+        has_secret = bool(self.password or self.misc or self.hashes)
+        if self._email:
+            keep = True
+        elif (self.username or self.phone) and (has_secret or self.service):
+            keep = True
+        else:
+            keep = False
+
+        if not keep:
             raise AccountCreationError(f'Not enough information to create account:\n{str(self)[:64]}')
 
 
@@ -103,6 +135,12 @@ class Account():
                     doc['h'] = self.hashes
                 if self.misc:
                     doc['m'] = self.misc
+                if self.phone:
+                    doc['t'] = self.phone
+                if self.service:
+                    # stored reversed so service/zone queries can use a prefix index
+                    # (mirrors how the email domain is reversed inside _id)
+                    doc['v'] = self.service[::-1]
         except ValueError:
             raise AccountCreationError(f'[!] Error formatting {str(self.bytes)[:64]}')
 
@@ -120,9 +158,11 @@ class Account():
         j['p'] = self.password
         j['h'] = self.hashes
         j['m'] = self.misc
+        j['t'] = self.phone
+        j['v'] = self.service
         j['s'] = self.sources
         return j
-    
+
 
 
     def set_email(self, email):
@@ -155,7 +195,8 @@ class Account():
     def from_document(cls, document):
 
         _email = document.get('e')
-        domain = document.get('_id').split('|')[0]
+        _id = document.get('_id', '')
+        domain = _id.split('|')[0]
         if _email and domain:
             email = _email + '@' + domain[::-1]
         else:
@@ -164,16 +205,22 @@ class Account():
         password = document.get('p', '')
         hashes = document.get('h', [])
         misc = document.get('m', '')
+        phone = document.get('t', '')
+        # service stored reversed
+        service = document.get('v', '')
+        if service:
+            service = service[::-1]
         sources = document.get('s', [])
-        return cls(email=email, username=username, password=password, hashes=hashes, misc=misc, sources=sources)
+        return cls(email=email, username=username, password=password, hashes=hashes,
+                   misc=misc, sources=sources, phone=phone, service=service)
 
 
     @property
     def bytes(self, delimiter=b'\x00'):
 
         return delimiter.join(
-            x.encode('utf-8', errors='ignore') for x in 
-            [self.email, self.username, self.password, self.formatted_hashes, self.misc]
+            x.encode('utf-8', errors='ignore') for x in
+            [self.email, self.username, self.password, self.formatted_hashes, self.misc, self.phone, self.service]
         )
 
 
@@ -199,14 +246,6 @@ class Account():
 
         return self._id
 
-        '''
-        # sha1 is used for speed, collisions are *very* unlikely in datasets of this size
-
-        if not self._id:
-            self._id = base64.b64encode(hashlib.sha256(self.bytes).digest())[:20].decode()
-        return self._id
-        '''
-
 
     @property
     def formatted_hashes(self):
@@ -229,8 +268,12 @@ class Account():
 
         if self.username:
             return self.username
-        else:
+        elif self.email:
             return self.email
+        elif self.phone:
+            return self.phone
+        else:
+            return self.service
 
 
     def __eq__(self, other):
@@ -248,7 +291,8 @@ class Account():
 
     def __str__(self):
 
-        return ':'.join([self.email, self.username, self.password, self.formatted_hashes, self.misc])
+        return ':'.join([self.email, self.username, self.password, self.formatted_hashes,
+                         self.misc, self.phone, self.service])
 
 
     def __iter__(self):
