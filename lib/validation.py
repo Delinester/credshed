@@ -256,10 +256,11 @@ def validate_query_type(query, query_type='auto'):
         'tel': 'phone', 'mobile': 'phone', 'msisdn': 'phone',
         'url': 'service', 'site': 'service', 'host': 'service', 'domain_service': 'service',
         'mail': 'email', 'e': 'email', 'd': 'domain',
+        'md5': 'hash', 'sha1': 'hash', 'sha256': 'hash', 'bcrypt': 'hash', 'ntlm': 'hash', 'h': 'hash',
     }
     query_type = aliases.get(query_type, query_type)
 
-    explicit_types = {'email', 'domain', 'username', 'password', 'phone', 'service', 'tld'}
+    explicit_types = {'email', 'domain', 'username', 'password', 'phone', 'service', 'tld', 'hash'}
 
     # honor a valid explicit choice (these fields can hold almost anything,
     # so trust the operator rather than re-detecting)

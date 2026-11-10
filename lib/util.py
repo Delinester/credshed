@@ -12,6 +12,45 @@ from pathlib import Path
 log = logging.getLogger('credshed.util')
 
 
+class BoundedCounter(dict):
+    '''
+    A counting dict that caps the number of distinct keys so that ingesting a
+    huge file (e.g. a 250 GB dump with tens of millions of distinct domains /
+    services) cannot exhaust RAM.  When the cap is reached it prunes the
+    lowest-count (long-tail) keys, keeping the heavy hitters that actually
+    matter for top-N / regional statistics.  Counts for surviving keys stay
+    exact; only the rarely-seen tail is approximate.
+    '''
+
+    __slots__ = ('cap', '_prunes')
+
+    def __init__(self, cap=500000):
+        super().__init__()
+        self.cap = cap
+        self._prunes = 0
+
+    def bump(self, key, n=1):
+        if not key:
+            return
+        if key in self:
+            self[key] += n
+        elif len(self) < self.cap:
+            self[key] = n
+        else:
+            self._prune()
+            # after pruning there is room again; a brand-new tail key is
+            # dropped (not counted) only in the rare case the prune freed nothing
+            if len(self) < self.cap:
+                self[key] = n
+
+    def _prune(self):
+        # keep the top half by count; drops the long tail
+        self._prunes += 1
+        keep = sorted(self.items(), key=lambda kv: kv[1], reverse=True)[: max(1, self.cap // 2)]
+        self.clear()
+        self.update(keep)
+
+
 def encode(s):
 
     try:

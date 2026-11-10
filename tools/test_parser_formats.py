@@ -27,6 +27,15 @@ EXPECT = {  # filename -> expected detected format
     '11_mixed_dirty.txt': {'mixed', 'combo', 'ulp'},
     '12_url_phone_pass.txt': 'ulp',
     '13_colon_in_pass.txt': 'combo',
+    '14_stealer_blocks.txt': 'blocks',
+    '15_space.txt': {'combo', 'generic', 'mixed'},
+    '16_email_hash_salt.txt': 'generic',
+    '17_potfile.txt': {'combo', 'mixed', 'generic'},
+    '18_latin1.txt': 'combo',
+    '19_bom_header.csv': 'csv',
+    '20_scheme_crlf.txt': 'ulp',
+    '21_pipe_pad.txt': 'generic',
+    '22_url_port.txt': {'ulp', 'generic'},
 }
 
 

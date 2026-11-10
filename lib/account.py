@@ -101,11 +101,14 @@ class Account():
         # An account is worth keeping if:
         #   - we have an email (useful even by itself, for OSINT / leak membership), OR
         #   - we have a username or phone AND some secret (password/hash/misc) or service context
-        has_identity = bool(self._email or self.username or self.phone)
         has_secret = bool(self.password or self.misc or self.hashes)
         if self._email:
             keep = True
         elif (self.username or self.phone) and (has_secret or self.service):
+            keep = True
+        elif self.hashes:
+            # a hash with no identity is still useful reference data
+            # (e.g. a hashcat potfile line: <hash>:<cracked plaintext>)
             keep = True
         else:
             keep = False

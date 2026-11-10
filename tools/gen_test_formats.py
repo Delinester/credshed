@@ -157,6 +157,58 @@ def gen(out_dir, rows):
                 f.write(f'garbage line with no delimiter {i} {rnd_user(r)}\n')        # junk
     files.append(p)
 
+    def rnd_bcrypt(r):
+        import string as _s
+        b64 = _s.ascii_letters + _s.digits + './'
+        return '$2y$10$' + ''.join(r.choice(b64) for _ in range(53))
+
+    # 14 — stealer-log multi-line "Key: value" blocks (RedLine / Vidar style)
+    p = out / '14_stealer_blocks.txt'
+    with open(p, 'w', encoding='utf-8') as f:
+        for i in range(rows):
+            who = rnd_email(r) if i % 2 else rnd_user(r)
+            f.write(f'SOFT: Google [Chrome] Default\nURL: https://{rnd_service(r)}\n'
+                    f'USER: {who}\nPASS: {rnd_pass(r)}\n' + ('=' * 40) + '\n')
+    files.append(p)
+
+    # 15 — space-separated (email pass)
+    files.append(lines('15_space.txt', lambda: f'{rnd_email(r)} {rnd_pass(r)}'))
+
+    # 16 — email:hash:salt  (classic DB dump with a salt column)
+    files.append(lines('16_email_hash_salt.txt', lambda: f'{rnd_email(r)}:{rnd_md5(r)}:{rnd_md5(r)[:8]}'))
+
+    # 17 — hashcat potfile  (<hash>:<cracked plaintext>, no identity)
+    files.append(lines('17_potfile.txt', lambda: f'{rnd_bcrypt(r)}:{rnd_pass(r)}'))
+
+    # 18 — Latin-1 encoded names with accents
+    p = out / '18_latin1.txt'
+    with open(p, 'w', encoding='latin-1') as f:
+        names = ['José', 'Müller', 'François', 'Søren', 'Ângela', 'Zoë']
+        for i in range(rows):
+            f.write(f'{r.choice(names)}{r.randint(1,99)}@{r.choice(CC_DOMAINS)}:{r.choice(names)}{r.randint(1,999)}\n')
+    files.append(p)
+
+    # 19 — UTF-8 with BOM + CSV header
+    p = out / '19_bom_header.csv'
+    with open(p, 'w', encoding='utf-8-sig') as f:
+        f.write('login,secret,site\n')
+        for _ in range(rows):
+            f.write(f'{rnd_user(r)},{rnd_pass(r)},{rnd_service(r)}\n')
+    files.append(p)
+
+    # 20 — ULP with scheme + CRLF line endings (like a real stealer combo export)
+    p = out / '20_scheme_crlf.txt'
+    with open(p, 'wb') as f:
+        for _ in range(rows):
+            f.write(f'https://{rnd_service(r)}/login:{rnd_email(r)}:{rnd_pass(r)}\r\n'.encode('utf-8'))
+    files.append(p)
+
+    # 21 — pipe-delimited with padding spaces
+    files.append(lines('21_pipe_pad.txt', lambda: f'{rnd_email(r)} | {rnd_user(r)} | {rnd_pass(r)}'))
+
+    # 22 — ULP where the URL carries an explicit :port
+    files.append(lines('22_url_port.txt', lambda: f'{rnd_service(r)}:{r.choice([8080,443,2082,21,25])}:{rnd_email(r)}:{rnd_pass(r)}'))
+
     return files
 
 

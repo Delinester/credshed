@@ -14,6 +14,9 @@
 *.service text eol=lf
 *.txt   text eol=lf
 
+# Test fixtures must keep their exact bytes (CRLF / Latin-1 / BOM are the point)
+tests/fixtures/** -text
+
 # Binary (never touch)
 *.png binary
 *.jpg binary

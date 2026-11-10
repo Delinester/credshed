@@ -13,15 +13,22 @@ See **[docs/DFIR_GUIDE.md](docs/DFIR_GUIDE.md)** for the full investigator playb
 
 **Highlights**
 - **Robust, format-aware parser** (`lib/parser/smartparse.py`). Handles modern
-  **stealer-log / ULP** dumps (`url:login:password`) plus combos, `email:hash`,
-  CSV-with-header, SQL `INSERT`, JSON-lines, pipe/tab, and heterogeneous *dirty*
-  files. On ULP data it captures **~99.8%** of rows (upstream dropped ~52%) and
-  preserves the breached **service URL** and **phone**, routing each login by
-  type (email / username / phone) per row.
+  **stealer-log / ULP** dumps (`url:login:password`, incl. `https://` scheme and
+  `:port`) plus combos, `email:hash`, `email:hash:salt`, CSV (+header/+BOM), SQL
+  `INSERT`, JSON-lines, pipe/tab/space, Latin-1, **hashcat potfiles**
+  (`hash:plaintext`), **multi-line stealer-log blocks** (`URL:`/`Login:`/`Password:`),
+  and heterogeneous *dirty* files. On ULP data it captures **~99.8%** of rows
+  (upstream dropped ~52%) and preserves the breached **service URL** and **phone**,
+  routing each login by type (email / username / phone) per row.
+- **Scales past RAM:** streams line-by-line with a 1 MiB read cap, and bounds the
+  per-source stat histograms so ingesting a 250 GB file can't exhaust memory.
 - **New search dimensions:** in addition to email / domain / username, you can
-  now search by **password** (reverse lookup), **phone**, **service** (breached
-  platform, incl. subdomains and `-q service .ru` zone), and **TLD / domain
-  zone** (`-q tld .ru`).
+  now search by **password** (reverse lookup), **hash**, **phone**, **service**
+  (breached platform, incl. subdomains and `-q service .ru` zone), and **TLD /
+  domain zone** (`-q tld .ru`).
+- **Statistics web dashboard** (`web/`): a dependency-free, read-only, light/dark
+  page with fully **browsable** regional / country / zone / service / domain lists
+  (expand + filter to the smallest entry). Statistics only — no credential data.
 - **Regional statistics** (`--tld-stats`, `--db-stats`): per-country and
   per-region breakdown of the data (victim geography from email zones, and
   breached-platform geography from service zones), computed from per-source

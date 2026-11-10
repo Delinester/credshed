@@ -169,13 +169,29 @@ class File(type(pathlib.Path())):
 
         decoding_errors = 0
 
+        # cap on a single read so a file with no (or extremely sparse) newlines
+        # streams in bounded chunks instead of loading 250 GB into one string
+        max_line = 1 << 20  # 1 MiB
+
+        # read UTF-8 as utf-8-sig so a leading BOM is stripped transparently
+        # (and plain UTF-8 still decodes identically)
+        enc = self.encoding
+        if (enc or '').lower().replace('-', '') in ('utf8', 'usascii', 'ascii'):
+            enc = 'utf-8-sig'
+
         try:
             try:
-                self._f = open(self, 'r', encoding=self.encoding, errors='backslashreplace')
+                self._f = open(self, 'r', encoding=enc, errors='backslashreplace')
             except LookupError:
                 self._f = open(self, 'r', encoding=self.default_encoding, errors='backslashreplace')
 
-            for line in self._f:
+            # readline(size) returns at most `size` chars OR up to a newline,
+            # so an unusually long line is emitted in <=1 MiB pieces rather than
+            # buffered whole.  Normal (newline-terminated) lines are unaffected.
+            while True:
+                line = self._f.readline(max_line)
+                if not line:
+                    break
                 yield line.strip('\r\n\t')
 
             '''

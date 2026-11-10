@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Credshed Statistics</title>
-<meta name="description" content="Aggregate statistics dashboard for a credshed breach-intelligence database — totals, regional breakdown, top services and domains. Statistics only; no credential data.">
+<meta name="description" content="Aggregate statistics dashboard for a credshed breach-intelligence database — totals, regional breakdown, top services and domains, fully browsable. Statistics only; no credential data.">
 <style>
   :root{
     color-scheme: light;
@@ -36,16 +36,11 @@
   }
   *{box-sizing:border-box}
   html,body{margin:0}
-  body{
-    background:var(--plane); color:var(--ink);
-    font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
-    font-size:15px; line-height:1.45; -webkit-font-smoothing:antialiased;
-  }
+  body{background:var(--plane); color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif; font-size:15px; line-height:1.45; -webkit-font-smoothing:antialiased}
   .wrap{max-width:1180px; margin:0 auto; padding:0 16px 64px}
-  a{color:var(--s1)}
   .tnum{font-variant-numeric:tabular-nums}
 
-  /* header */
   header{position:sticky; top:0; z-index:10; background:color-mix(in srgb,var(--plane) 86%, transparent);
     backdrop-filter:saturate(1.3) blur(8px); border-bottom:1px solid var(--border)}
   .hd{max-width:1180px; margin:0 auto; padding:14px 16px; display:flex; align-items:center; gap:14px; flex-wrap:wrap}
@@ -54,16 +49,13 @@
   .logo b{color:var(--s1)}
   .sub{color:var(--muted); font-size:12.5px}
   .spacer{flex:1}
-  .pill{font-size:11.5px; color:var(--ink-2); background:var(--surface-2); border:1px solid var(--border);
-    padding:4px 9px; border-radius:999px; display:inline-flex; align-items:center; gap:6px}
+  .pill{font-size:11.5px; color:var(--ink-2); background:var(--surface-2); border:1px solid var(--border); padding:4px 9px; border-radius:999px; display:inline-flex; align-items:center; gap:6px}
   .dot{width:7px;height:7px;border-radius:50%;background:var(--good)}
   .dot.sample{background:var(--s4)}
-  button{font:inherit; color:var(--ink); background:var(--surface); border:1px solid var(--border);
-    border-radius:9px; padding:6px 11px; cursor:pointer; box-shadow:var(--shadow)}
+  button{font:inherit; color:var(--ink); background:var(--surface); border:1px solid var(--border); border-radius:9px; padding:6px 11px; cursor:pointer; box-shadow:var(--shadow)}
   button:hover{background:var(--surface-2)}
   .ttl{margin:26px 2px 2px; font-size:13px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); font-weight:700}
 
-  /* stat tiles */
   .tiles{display:grid; grid-template-columns:repeat(auto-fit,minmax(168px,1fr)); gap:14px; margin-top:12px}
   .tile{background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:16px 16px 14px; box-shadow:var(--shadow)}
   .tile .k{font-size:12px; color:var(--ink-2); display:flex; align-items:center; gap:7px}
@@ -71,21 +63,19 @@
   .tile .x{font-size:12px; color:var(--muted); margin-top:3px}
   .swatch{width:9px;height:9px;border-radius:2px;flex:none}
 
-  /* card grid */
   .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:16px; margin-top:14px}
   .card{background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:16px 16px 14px; box-shadow:var(--shadow); min-width:0}
   .card.wide{grid-column:1 / -1}
   @media(min-width:760px){ .card.span2{grid-column:span 2} }
   .card h3{margin:0 0 2px; font-size:14.5px; font-weight:680}
-  .card .note{color:var(--muted); font-size:12px; margin:0 0 12px}
+  .card .note{color:var(--muted); font-size:12px; margin:0 0 10px}
   .seg-ctl{display:inline-flex; background:var(--surface-2); border:1px solid var(--border); border-radius:8px; overflow:hidden; margin-left:auto}
   .seg-ctl button{border:0; border-radius:0; box-shadow:none; background:transparent; padding:4px 10px; font-size:12.5px; color:var(--ink-2)}
   .seg-ctl button[aria-pressed="true"]{background:var(--s1); color:#fff}
   .rowtop{display:flex; align-items:center; gap:10px}
 
-  /* bar list */
   .bars{display:flex; flex-direction:column; gap:7px; margin-top:4px}
-  .brow{display:grid; grid-template-columns:minmax(96px,34%) 1fr auto; align-items:center; gap:10px; padding:2px 4px; border-radius:7px}
+  .brow{display:grid; grid-template-columns:minmax(96px,38%) 1fr auto; align-items:center; gap:10px; padding:2px 4px; border-radius:7px}
   .brow:hover{background:var(--surface-2)}
   .blabel{font-size:12.5px; color:var(--ink-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
   .btrack{height:12px; background:var(--track); border-radius:4px; overflow:hidden}
@@ -93,14 +83,21 @@
   .bval{font-size:12.5px; color:var(--ink); min-width:62px; text-align:right}
   .bpct{color:var(--muted); font-size:11px; margin-left:5px}
 
-  /* stacked composition */
+  .more{margin-top:11px; width:100%; font-size:12.5px; color:var(--s1); background:transparent; border:1px dashed var(--border); padding:6px; border-radius:8px; box-shadow:none}
+  .more:hover{background:var(--surface-2)}
+  .filter{width:100%; margin:10px 0 8px; padding:7px 10px; font:inherit; font-size:13px; color:var(--ink);
+    background:var(--surface-2); border:1px solid var(--border); border-radius:8px}
+  .scroll{max-height:380px; overflow-y:auto; padding-right:4px}
+  .scroll::-webkit-scrollbar{width:9px} .scroll::-webkit-scrollbar-thumb{background:var(--baseline); border-radius:9px}
+  .count{color:var(--muted); font-size:11.5px; margin-left:6px}
+  .empty{color:var(--muted); font-size:12.5px; padding:8px 4px}
+
   .stack{display:flex; height:30px; border-radius:7px; overflow:hidden; background:var(--track); gap:2px; margin:6px 0 12px}
   .stack .seg{min-width:2px; transition:width .5s cubic-bezier(.2,.7,.2,1)}
   .legend{display:flex; flex-wrap:wrap; gap:14px}
   .legend .li{display:flex; align-items:center; gap:7px; font-size:12.5px; color:var(--ink-2)}
   .legend .li b{color:var(--ink); font-weight:650}
 
-  /* table */
   table{width:100%; border-collapse:collapse; font-size:13px}
   th,td{text-align:left; padding:9px 10px; border-bottom:1px solid var(--border)}
   th{color:var(--muted); font-weight:650; font-size:11.5px; letter-spacing:.04em; text-transform:uppercase}
@@ -114,10 +111,7 @@
 <body>
 <header>
   <div class="hd">
-    <div class="brand">
-      <span class="logo">cred<b>shed</b></span>
-      <span class="sub">breach-intelligence statistics</span>
-    </div>
+    <div class="brand"><span class="logo">cred<b>shed</b></span><span class="sub">breach-intelligence statistics</span></div>
     <div class="spacer"></div>
     <span id="status" class="pill"><span class="dot"></span><span id="statusText">loading…</span></span>
     <button id="refresh" title="Reload statistics">↻ Refresh</button>
@@ -156,62 +150,106 @@
         </div>
       </div>
       <div class="grid" style="margin-top:4px; gap:16px">
-        <div><div class="note" style="margin:0 0 6px">By region</div><div id="geoRegions" class="bars"></div></div>
-        <div><div class="note" style="margin:0 0 6px">By country / zone</div><div id="geoCountries" class="bars"></div></div>
+        <div><div class="note" style="margin:0 0 6px">By region</div><div id="geoRegions"></div></div>
+        <div><div class="note" style="margin:0 0 6px">By country</div><div id="geoCountries"></div></div>
+        <div><div class="note" style="margin:0 0 6px">By TLD zone</div><div id="geoZones"></div></div>
       </div>
     </div>
   </section>
 
   <div class="ttl">Top lists</div>
   <section class="grid">
-    <div class="card"><h3>Breached services</h3><p class="note">Most common platforms in the data.</p><div id="topServices" class="bars"></div></div>
-    <div class="card"><h3>Email providers</h3><p class="note">Most common email domains.</p><div id="topDomains" class="bars"></div></div>
-    <div class="card"><h3>Password base-words</h3><p class="note">Most common roots in plaintext passwords.</p><div id="topPw" class="bars"></div></div>
+    <div class="card"><h3>Breached services</h3><p class="note">Most common platforms in the data.</p><div id="topServices"></div></div>
+    <div class="card"><h3>Email providers</h3><p class="note">Most common email domains.</p><div id="topDomains"></div></div>
+    <div class="card"><h3>Password base-words</h3><p class="note">Most common roots in plaintext passwords.</p><div id="topPw"></div></div>
   </section>
 
   <div class="ttl">Sources</div>
   <section class="card wide" style="padding:6px 6px 2px; overflow-x:auto">
-    <table id="sources">
-      <thead><tr>
-        <th>#</th><th>Source</th><th class="fmtcol">Format</th>
-        <th class="num">Accounts</th><th class="num">Email</th><th class="num">Username</th>
-        <th class="num">Phone</th><th class="num">w/ password</th>
-      </tr></thead>
-      <tbody></tbody>
-    </table>
+    <table id="sources"><thead><tr>
+      <th>#</th><th>Source</th><th>Format</th>
+      <th class="num">Accounts</th><th class="num">Email</th><th class="num">Username</th>
+      <th class="num">Phone</th><th class="num">w/ password</th>
+    </tr></thead><tbody></tbody></table>
   </section>
 
-  <footer>
-    Statistics only — this dashboard exposes aggregate numbers, never individual credentials.
-    <span id="asof"></span>
-  </footer>
+  <footer>Statistics only — this dashboard exposes aggregate numbers, never individual credentials.<span id="asof"></span></footer>
 </div>
 
 <script>
-const SAMPLE = /*__SAMPLE__*/{"totals":{"accounts":16480271,"sources":3,"email":7202708,"username":8814695,"phone":462868,"with_password":16347771,"with_hash":8673,"with_service":16125657,"filesize":791748028},"indexes":["_id_","idx_u","idx_p","idx_t","idx_v"],"formats":[["ulp",16480271]],"sources":[{"source_id":2,"name":"/mnt/d/1_Credshed/datas/5.500.049.txt","total_accounts":5494952,"parser_format":"ulp","login_types":{"email":2296216,"username":3044586,"phone":154150},"with_password":5440099,"with_service":5416770,"import_finished":true},{"source_id":3,"name":"/mnt/d/1_Credshed/datas/5.500.037.txt","total_accounts":5489118,"parser_format":"ulp","login_types":{"email":2135334,"username":3211275,"phone":142509},"with_password":5472601,"with_service":5392789,"import_finished":true},{"source_id":4,"name":"/mnt/d/1_Credshed/datas/5.500.046.txt","total_accounts":5496201,"parser_format":"ulp","login_types":{"email":2771158,"username":2558834,"phone":166209},"with_password":5435071,"with_service":5316098,"import_finished":true}],"top_domains":[["gmail.com",4570746],["hotmail.com",529932],["yahoo.com",190829],["gmbol.cem",70482],["icloud.com",54691],["live.com",29536],["hotmail.fr",25688],["web.de",23397],["mail.ru",20047],["aol.com",18102],["libero.it",18020],["yahoo.fr",17236]],"top_services":[["accounts.google.com",628086],["login.live.com",241289],["roblox.com",240576],["discord.com",149705],["instagram.com",133975],["netflix.com",98460],["com.facebook.katana",91872],["paypal.com",81771],["amazon.com",78885],["login.microsoftonline.com",76985],["twitch.tv",71858],["google.com",68215]],"top_password_basewords":[["password",153461],["admin",109104],["com",92934],["gmail",26797],["abc",19438],["qwerty",16396],["asd",15018],["ahmed",12184],["abcd",11801],["pass",11767],["alex",11069],["ali",9829]],"regions_email":{"zones":[["com",5877892],["fr",136577],["de",111479],["net",99452],["cem",94373],["it",93055],["es",64071],["nl",63740],["com.br",51383],["co.uk",49977],["pl",36907],["ru",36658],["at",21313],["org",20083]],"countries":[[".com",5877892],["France",136577],["Germany",111479],[".net",99452],[".cem",94373],["Italy",93055],["Spain",64071],["Brazil",63749],["Netherlands",63740],["United Kingdom",55123],["Poland",36907],["Russia",36658],["India",23080],["Austria",21313]],"regions":[["Generic (gTLD)",6031687],["Western Europe",409889],["Southern Europe",169971],["Other / unknown",127244],["Latin America",121880],["Central Europe",81093],["Eastern Europe / CIS",39168],["Southeast Asia",29225],["East Asia",26235],["South Asia (often generic)",23080],["Southeast Asia (often generic)",17949],["Africa",17064],["Latin America (often generic)",16906],["Africa / North",14485],["North America",12266],["Middle East",11311],["Oceania",11145],["Baltics",10089],["Middle East / Gulf",9567],["Nordics",8470],["South Asia",7783],["Central Europe (often generic)",4596],["Caucasus",1016],["Central Asia",339],["Africa / North (often generic)",250]]},"regions_service":{"zones":[["com",8877851],["net",550494],["com.br",461984],["org",318289],["android",189129],["in",174993],["id",165888],["fr",152306],["it",144319],["co",144067],["gov.in",140927],["io",132945],["tv",131897],["es",113512]],"countries":[[".com",8877851],["Brazil",623106],[".net",550494],["India",367681],[".org",318289],["Indonesia",198375],[".android",189129],["France",152306],["Italy",144319],["Colombia",144067],[".io",132945],[".tv",131897],["Spain",113512],["Argentina",103633]],"regions":[["Generic (gTLD)",10439735],["Other / unknown",1752518],["Latin America",1035623],["Western Europe",397637],["South Asia (often generic)",367681],["Southern Europe",318292],["Central Europe",233016],["Southeast Asia",232147],["Southeast Asia (often generic)",198375],["Latin America (often generic)",144067],["Middle East",116103],["East Asia",109953],["Africa",106335],["South Asia",102212],["Eastern Europe / CIS",99012],["Oceania",95616],["North America",94995],["Africa / North",91855],["Middle East / Gulf",70180],["Central Europe (often generic)",49178],["Nordics",30245],["Baltics",19834],["Caucasus",8364],["Central Asia",6566],["Africa / North (often generic)",5879]]}}/*__/SAMPLE__*/;
+const SAMPLE = /*__SAMPLE__*/{"totals":{"accounts":20447268,"sources":27,"email":9219382,"username":10705685,"phone":520288,"with_password":20306701,"with_hash":13990,"with_service":20087526,"filesize":1110425879},"indexes":["_id_","idx_u","idx_p","idx_t","idx_v","idx_h"],"formats":[["ulp",20443675],["combo",1611],["generic",1016],["csv",402],["blocks",201],["jsonl",201],["mixed",162]],"sources":[{"source_id":2,"name":"/mnt/d/1_Credshed/datas/hashcat.potfile","total_accounts":3,"parser_format":"combo","login_types":{"email":0,"username":0,"phone":0},"with_password":3,"with_service":0,"import_finished":true},{"source_id":3,"name":"nt/d/1_Credshed/tests/fixtures/leak_formats/03_user_pass.txt","total_accounts":201,"parser_format":"combo","login_types":{"email":0,"username":201,"phone":0},"with_password":201,"with_service":0,"import_finished":true},{"source_id":4,"name":"/mnt/d/1_Credshed/tests/fixtures/leak_formats/18_latin1.txt","total_accounts":201,"parser_format":"combo","login_types":{"email":0,"username":201,"phone":0},"with_password":201,"with_service":0,"import_finished":true},{"source_id":5,"name":"shed/tests/fixtures/leak_formats/02_email_semicolon_pass.txt","total_accounts":201,"parser_format":"combo","login_types":{"email":201,"username":0,"phone":0},"with_password":201,"with_service":0,"import_finished":true},{"source_id":6,"name":"/mnt/d/1_Credshed/tests/fixtures/leak_formats/15_space.txt","total_accounts":201,"parser_format":"combo","login_types":{"email":201,"username":0,"phone":0},"with_password":201,"with_service":0,"import_finished":true},{"source_id":7,"name":"1_Credshed/tests/fixtures/leak_formats/14_stealer_blocks.txt","total_accounts":201,"parser_format":"blocks","login_types":{"email":100,"username":101,"phone":0},"with_password":201,"with_service":201,"import_finished":true},{"source_id":8,"name":"Credshed/tests/fixtures/leak_formats/01_email_colon_pass.txt","total_accounts":201,"parser_format":"combo","login_types":{"email":201,"username":0,"phone":0},"with_password":201,"with_service":0,"import_finished":true},{"source_id":9,"name":"/mnt/d/1_Credshed/tests/fixtures/leak_formats/10_jsonl.jsonl","total_accounts":201,"parser_format":"jsonl","login_types":{"email":201,"username":0,"phone":0},"with_password":201,"with_service":201,"import_finished":true},{"source_id":10,"name":"1_Credshed/tests/fixtures/leak_formats/12_url_phone_pass.txt","total_accounts":201,"parser_format":"ulp","login_types":{"email":0,"username":0,"phone":201},"with_password":201,"with_service":201,"import_finished":true},{"source_id":11,"name":"t/d/1_Credshed/tests/fixtures/leak_formats/09_sql_insert.sql","total_accounts":212,"parser_format":"generic","login_types":{"email":200,"username":0,"phone":0},"with_password":0,"with_service":0,"import_finished":true},{"source_id":12,"name":"/d/1_Credshed/tests/fixtures/leak_formats/11_mixed_dirty.txt","total_accounts":162,"parser_format":"mixed","login_types":{"email":100,"username":42,"phone":20},"with_password":142,"with_service":60,"import_finished":true},{"source_id":13,"name":"/mnt/d/1_Credshed/tests/fixtures/leak_formats/17_potfile.txt","total_accounts":201,"parser_format":"combo","login_types":{"email":0,"username":0,"phone":0},"with_password":201,"with_service":0,"import_finished":true},{"source_id":14,"name":"t/d/1_Credshed/tests/fixtures/leak_formats/19_bom_header.csv","total_accounts":201,"parser_format":"csv","login_types":{"email":0,"username":201,"phone":0},"with_password":201,"with_service":201,"import_finished":true},{"source_id":15,"name":"t/d/1_Credshed/tests/fixtures/leak_formats/08_csv_header.csv","total_accounts":201,"parser_format":"csv","login_types":{"email":201,"username":0,"phone":201},"with_password":201,"with_service":0,"import_finished":true},{"source_id":16,"name":"/mnt/d/1_Credshed/tests/fixtures/leak_formats/06_pipe.txt","total_accounts":201,"parser_format":"generic","login_types":{"email":201,"username":0,"phone":0},"with_password":201,"with_service":0,"import_finished":true},{"source_id":17,"name":"_Credshed/tests/fixtures/leak_formats/16_email_hash_salt.txt","total_accounts":201,"parser_format":"generic","login_types":{"email":201,"username":0,"phone":0},"with_password":201,"with_service":0,"import_finished":true},{"source_id":18,"name":"/mnt/d/1_Credshed/tests/fixtures/leak_formats/07_tab.txt","total_accounts":201,"parser_format":"generic","login_types":{"email":201,"username":0,"phone":0},"with_password":201,"with_service":0,"import_finished":true},{"source_id":19,"name":"/d/1_Credshed/tests/fixtures/leak_formats/20_scheme_crlf.txt","total_accounts":201,"parser_format":"ulp","login_types":{"email":201,"username":0,"phone":0},"with_password":201,"with_service":201,"import_finished":true},{"source_id":20,"name":"/1_Credshed/tests/fixtures/leak_formats/13_colon_in_pass.txt","total_accounts":201,"parser_format":"combo","login_types":{"email":201,"username":0,"phone":0},"with_password":201,"with_service":0,"import_finished":true},{"source_id":21,"name":"mnt/d/1_Credshed/tests/fixtures/leak_formats/05_ulp_http.txt","total_accounts":201,"parser_format":"ulp","login_types":{"email":201,"username":0,"phone":0},"with_password":201,"with_service":201,"import_finished":true},{"source_id":22,"name":"mnt/d/1_Credshed/tests/fixtures/leak_formats/21_pipe_pad.txt","total_accounts":201,"parser_format":"generic","login_types":{"email":201,"username":0,"phone":0},"with_password":201,"with_service":0,"import_finished":true},{"source_id":23,"name":"/mnt/d/1_Credshed/datas/txtbase.txt","total_accounts":3962581,"parser_format":"ulp","login_types":{"email":2013875,"username":1891689,"phone":56998},"with_password":3954965,"with_service":3962234,"import_finished":true},{"source_id":24,"name":"nt/d/1_Credshed/tests/fixtures/leak_formats/04_email_md5.txt","total_accounts":201,"parser_format":"combo","login_types":{"email":201,"username":0,"phone":0},"with_password":0,"with_service":0,"import_finished":true},{"source_id":25,"name":"/mnt/d/1_Credshed/datas/5.500.037.txt","total_accounts":5489125,"parser_format":"ulp","login_types":{"email":2135171,"username":3210133,"phone":142509},"with_password":5472602,"with_service":5391491,"import_finished":true},{"source_id":26,"name":"/mnt/d/1_Credshed/datas/5.500.046.txt","total_accounts":5496209,"parser_format":"ulp","login_types":{"email":2770980,"username":2558679,"phone":166209},"with_password":5435071,"with_service":5315777,"import_finished":true},{"source_id":27,"name":"mnt/d/1_Credshed/tests/fixtures/leak_formats/22_url_port.txt","total_accounts":201,"parser_format":"ulp","login_types":{"email":201,"username":0,"phone":0},"with_password":201,"with_service":201,"import_finished":true},{"source_id":28,"name":"/mnt/d/1_Credshed/datas/5.500.049.txt","total_accounts":5494956,"parser_format":"ulp","login_types":{"email":2296142,"username":3044438,"phone":154150},"with_password":5440099,"with_service":5416557,"import_finished":true}],"top_domains":[["gmail.com",5993793],["hotmail.com",644220],["yahoo.com",250229],["gmbol.cem",70482],["icloud.com",69092],["outlook.com",40353],["live.com",37313],["hotmail.fr",29971],["web.de",25782],["mail.ru",22878],["aol.com",22872],["msn.com",21432],["libero.it",20664],["yahoo.fr",19737],["gmx.de",18838],["hotmail.co.uk",18676],["naver.com",18335],["hotmail.es",17056],["laposte.net",17043],["mail.com",16987],["orange.fr",16102],["wp.pl",16014],["yahoo.com.br",15524],["yahoo.es",14198],["qq.com",13929],["free.fr",13730],["googlemail.com",13349],["live.fr",13187],["protonmail.com",12116],["outlook.fr",11801],["comcast.net",11764],["seznam.cz",11549],["hotmail.it",11355],["alice.it",10411],["yahoo.co.jp",10234],["sfr.fr",10193],["ymail.com",10136],["hotmail.de",10054],["hejmbol.cem",9735],["yahoo.de",9018],["tiscali.it",8972],["email.com",8745],["abv.bg",8706],["virgilio.it",8397],["outlook.es",8389],["freenet.de",8265],["live.nl",8203],["inbox.lv",8162],["gmx.com",7994],["gmx.at",7832],["btinternet.com",7735],["t-online.de",7655],["mailnesia.com",7424],["sky.com",7048],["telefonica.net",7042],["verizon.net",6966],["neuf.fr",6937],["bbox.fr",6876],["daum.net",6831],["ziggo.nl",6730]],"top_services":[["accounts.google.com",744610],["roblox.com",307838],["login.live.com",277856],["instagram.com",184156],["discord.com",176852],["com.facebook.katana",120805],["netflix.com",118361],["facebook.com",106286],["amazon.com",101409],["paypal.com",99699],["login.microsoftonline.com",96053],["com.instagram.android",89260],["com.roblox.client",88731],["twitch.tv",86364],["com.netflix.mediaclient",76097],["twitter.com",75403],["google.com",69010],["epicgames.com",66909],["store.steampowered.com",64502],["login.yahoo.com",60878],["steamcommunity.com",58619],["signup.live.com",58381],["idmsa.apple.com",57749],["mega.nz",55842],["com.discord",53854],["m.facebook.com",52280],["linkedin.com",51576],["account.live.com",50303],["accounts.spotify.com",46481],["tlauncher.org",40619],["github.com",38039],["com.spotify.music",36839],["help.steampowered.com",36157],["myaccount.google.com",35902],["signin.rockstargames.com",33077],["com.pinterest",32733],["aternos.org",31168],["connect.ubisoft.com",31016],["accounts.epicgames.com",30844],["signin.ea.com",29355],["appleid.apple.com",28927],["discordapp.com",28330],["auth.riotgames.com",28288],["accounts.autodesk.com",27869],["account.samsung.com",27594],["com.snapchat.android",27541],["com.twitter.android",27134],["id.sonyentertainmentnetwork.com",24840],["my.account.sony.com",24161],["mobile.twitter.com",23789],["users.nexusmods.com",23749],["auth.services.adobe.com",23216],["amazon.in",23115],["dropbox.com",23089],["account.xiaomi.com",22901],["tv.twitch.android.app",22569],["minecraft.net",21735],["spotify.com",21614],["accounts.binance.com",20336],["account.mojang.com",19827]],"top_password_basewords":[["password",161468],["admin",129639],["com",99804],["none",46660],["gmail",28887],["abc",27219],["qwerty",19625],["pass",19134],["asd",18654],["abcd",15685],["ahmed",13748],["alex",13023],["pakistan",12669],["ali",12192],["qwe",11406],["welcome",11274],["daniel",10778],["lucas",9578],["david",9175],["love",8865],["asdf",8720],["gabriel",8719],["login",8527],["root",8324],["jose",7795],["mohamed",7637],["carlos",7548],["user",7524],["qwer",7319],["p@ssw0rd",7273],["luis",7213],["azerty",7179],["king",7172],["jesus",7170],["maria",7153],["https",7129],["pedro",7060],["net",7045],["leo",6943],["qaz",6798],["test",6513],["kumar",6357],["samuel",6242],["juan",6138],["lol",5995],["max",5916],["aaaa",5864],["miguel",5845],["std",5743],["aaa",5651],["minecraft",5607],["ahmad",5586],["diego",5370],["angel",5329],["kevin",5117],["omar",5099],["master",5092],["edu",5061],["sam",5042],["lakshman",5034]],"regions_email":{"zones":[["com",7665835],["fr",155543],["de",123725],["net",115431],["it",106194],["cem",94330],["es",69852],["nl",65115],["com.br",61773],["co.uk",61436],["pl",43212],["ru",42336],["org",28264],["edu",27313],["co",22003],["at",21931],["cz",18978],["in",17162],["id",15339],["ch",14847],["pe",12630],["ca",12329],["mx",11660],["co.jp",11470],["com.ar",11358],["vn",10863],["bg",10754],["pt",10539],["ph",10490],["hu",9417],["cl",9292],["eg",9105],["lv",8544],["ac.in",8392],["com.au",8282],["be",7397],["co.id",7335],["me",7222],["com.mx",7080],["br",6951],["co.za",6432],["ec",6353],["cm",6027],["sa",5882],["ma",5663],["co.in",5322],["gr",5121],["th",5069],["pk",5003],["ro",4958],["com.tw",4807],["eu",4693],["us",4491],["tr",4362],["se",4331],["gov.br",4164],["ac.uk",4032],["com.tr",3977],["edu.au",3873],["ae",3628]],"countries":[[".com",7665835],["France",155543],["Germany",123725],[".net",115431],["Italy",106194],[".cem",94330],["Brazil",76971],["Spain",69852],["United Kingdom",69500],["Netherlands",65115],["Poland",43212],["Russia",42336],["India",32376],[".org",28264],[".edu",27313],["Indonesia",22674],["Colombia",22003],["Austria",21931],["Czechia",18978],["Mexico",18740],["Japan",18320],["Switzerland",14847],["Argentina",14023],["Australia",13751],["Peru",12630],["Canada",12329],["Vietnam",10863],["Bulgaria",10754],["Portugal",10539],["Philippines",10490],["Hungary",9417],["Chile",9292],["Egypt",9105],["Latvia",8544],["Turkey",8339],["Thailand",8116],["South Africa",7742],["Belgium",7397],["Montenegro",7222],["Taiwan",7121],["Ecuador",6353],["Cameroon",6027],["Saudi Arabia",5882],["Pakistan",5690],["Morocco",5663],["Greece",5121],["Romania",4958],["Malaysia",4832],[".eu",4693],["United States",4491],["Sweden",4331],["United Arab Emirates",3628],["China",3335],["New Zealand",3199],["Denmark",3053],["Slovakia",2698],["Ukraine",2423],[".xyz",2237],[".io",2148],["Kenya",2107]],"regions":[["Generic (gTLD)",7860351],["Western Europe",459640],["Southern Europe",192121],["Latin America",146173],["Other / unknown",135620],["Central Europe",94673],["Eastern Europe / CIS",45466],["Southeast Asia",36797],["East Asia",33361],["South Asia (often generic)",32376],["Southeast Asia (often generic)",22674],["Latin America (often generic)",22003],["Africa",21294],["Africa / North",17138],["Oceania",17121],["North America",16820],["Middle East",13500],["Middle East / Gulf",12152],["Baltics",10537],["South Asia",10346],["Nordics",9923],["Central Europe (often generic)",7222],["Caucasus",1069],["Central Asia",736],["Africa / North (often generic)",269]]},"regions_service":{"zones":[["com",10954079],["net",658158],["com.br",536157],["org",393722],["android",261066],["in",232298],["gov.in",198591],["id",198390],["fr",186946],["co",176667],["it",168963],["io",163002],["tv",158002],["es",129283],["vn",125958],["katana",121628],["de",115040],["app",112384],["gov.br",101924],["client",96653],["co.uk",92052],["pl",91174],["ru",88072],["mx",78056],["mediaclient",76707],["pe",69461],["cl",69429],["com.ar",66958],["us",66250],["me",63502],["nz",59456],["eg",57989],["pk",57755],["sa",56433],["eu",56195],["edu",54789],["discord",53871],["br",52400],["ca",49872],["ro",49149],["ar",48837],["ph",48219],["hu",48118],["tr",47711],["bd",45047],["pt",41687],["xyz",40053],["music",38057],["co.in",37714],["co.id",37306],["th",36669],["ve",36561],["com.au",36357],["com.tr",35115],["nl",34915],["ai",33879],["to",32958],["com.mx",32877],["pinterest",32737],["cz",32383]],"countries":[[".com",10954079],["Brazil",727411],[".net",658158],["India",499273],[".org",393722],[".android",261066],["Indonesia",235696],["France",186946],["Colombia",176667],["Italy",168963],[".io",163002],[".tv",158002],["Spain",129283],["Vietnam",125958],[".katana",121628],["United Kingdom",118360],["Argentina",115795],["Germany",115040],[".app",112384],["Mexico",110933],[".client",96653],["Poland",91174],["Russia",88072],["Turkey",82826],[".mediaclient",76707],["Peru",69461],["Chile",69429],["United States",66250],["New Zealand",66150],["Pakistan",63700],["Montenegro",63502],["Egypt",57989],["Saudi Arabia",56433],[".eu",56195],[".edu",54789],[".discord",53871],["Thailand",51908],["Australia",51013],["Canada",49872],["Romania",49149],["Philippines",48219],["Hungary",48118],["Bangladesh",45047],["Malaysia",44669],["Portugal",41687],["South Africa",41589],[".xyz",40053],["Japan",38381],[".music",38057],["Venezuela",36561],["Netherlands",34915],["South Korea",34258],[".ai",33879],[".to",32958],[".pinterest",32737],["Czechia",32383],["Taiwan",31916],["Ecuador",31785],["Nigeria",31697],[".info",31631]],"regions":[["Generic (gTLD)",12908826],["Other / unknown",2347205],["Latin America",1210158],["South Asia (often generic)",499273],["Western Europe",498635],["Southern Europe",368328],["Southeast Asia",282832],["Central Europe",270987],["Southeast Asia (often generic)",235696],["Latin America (often generic)",176667],["East Asia",145194],["Africa",144503],["Middle East",136103],["South Asia",135784],["Oceania",117606],["North America",116122],["Eastern Europe / CIS",111464],["Africa / North",110470],["Middle East / Gulf",89777],["Central Europe (often generic)",63502],["Nordics",35980],["Baltics",21499],["Caucasus",8934],["Central Asia",6928],["Africa / North (often generic)",6733]]}}/*__/SAMPLE__*/;
+let CURRENT = SAMPLE, LIVE = false;
 
 const $ = s => document.querySelector(s);
 const fmt = n => (n==null?'—':Number(n).toLocaleString('en-US'));
-const pct = (n,d) => d? (100*n/d) : 0;
+const pct = (n,d) => d? (100*n/d):0;
 const bytesH = b => { if(!b) return '—'; const u=['B','KB','MB','GB','TB','PB']; let i=0; b=+b; while(b>=1024&&i<u.length-1){b/=1024;i++} return b.toFixed(b<10&&i>0?1:0)+' '+u[i]; };
+const esc = s => String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-function barList(el, items, {max, fmtVal=fmt, total=null, color='var(--s1)'}={}){
+function barsHTML(items, {max, total, color='var(--s1)'}={}){
+  if(!items.length) return '<div class="empty">No data.</div>';
   const m = max || Math.max(1, ...items.map(d=>d[1]));
-  el.innerHTML = items.map(d=>{
+  return items.map(d=>{
     const w = Math.max(2, 100*d[1]/m);
     const p = total? `<span class="bpct">${pct(d[1],total).toFixed(pct(d[1],total)<1?2:0)}%</span>`:'';
-    const label = String(d[0]);
-    return `<div class="brow" title="${label}: ${fmtVal(d[1])}">
-      <div class="blabel">${label}</div>
+    return `<div class="brow" title="${esc(d[0])}: ${fmt(d[1])}">
+      <div class="blabel">${esc(d[0])}</div>
       <div class="btrack"><div class="bfill" style="width:${w}%;background:${color}"></div></div>
-      <div class="bval tnum">${fmtVal(d[1])}${p}</div></div>`;
+      <div class="bval tnum">${fmt(d[1])}${p}</div></div>`;
   }).join('');
 }
 
+// simple (non-expandable) bar list
+function barList(el, items, opts={}){ el.innerHTML = `<div class="bars">${barsHTML(items, opts)}</div>`; }
+
+// expandable bar list: top N, then "Show all" -> scrollable + filterable full list
+function expandable(mount, {metric, target, color, total, top=12}){
+  const items = listFromCurrent(metric, target) || [];
+  const topItems = items.slice(0, top);
+  mount.innerHTML = `<div class="bars">${barsHTML(topItems,{total,color})}</div>` +
+    (items.length>top || LIVE ? `<button class="more">Show all ▾</button>` : '');
+  const btn = mount.querySelector('.more');
+  if(!btn) return;
+  let open=false, full=null;
+  btn.onclick = async ()=>{
+    open=!open;
+    if(!open){ mount.querySelector('.listwrap')?.remove(); btn.textContent='Show all ▾'; return; }
+    btn.textContent='Loading…';
+    full = await getFull(metric, target);
+    const wrap=document.createElement('div'); wrap.className='listwrap';
+    const m = Math.max(1, ...full.map(d=>d[1]));
+    wrap.innerHTML = `<input class="filter" placeholder="Filter ${full.length.toLocaleString()} entries…">
+      <div class="scroll"><div class="bars">${barsHTML(full,{max:m,total,color})}</div></div>`;
+    mount.querySelector('.bars').style.display='none';
+    mount.insertBefore(wrap, btn);
+    btn.textContent='Show less ▴';
+    const inp=wrap.querySelector('.filter'), host=wrap.querySelector('.scroll .bars');
+    inp.oninput=()=>{ const q=inp.value.trim().toLowerCase();
+      const f = q? full.filter(d=>String(d[0]).toLowerCase().includes(q)) : full;
+      host.innerHTML = f.length? barsHTML(f,{max:m,total,color}) : '<div class="empty">No match.</div>'; };
+    inp.focus();
+  };
+}
+
+function listFromCurrent(metric, target){
+  const d=CURRENT; if(!d) return [];
+  const r = target==='service'? d.regions_service : d.regions_email;
+  return ({countries:r.countries, zones:r.zones, regions:r.regions,
+    services:d.top_services, domains:d.top_domains, passwords:d.top_password_basewords})[metric] || [];
+}
+
+async function getFull(metric, target){
+  if(LIVE){
+    try{ const r=await fetch(`api/list?metric=${metric}&target=${target||'email'}`);
+      if(r.ok){ const j=await r.json(); if(Array.isArray(j.items)) return j.items; } }catch(e){}
+  }
+  return listFromCurrent(metric, target);
+}
+
 function render(d){
-  const t = d.totals;
-  // tiles
-  const tiles = [
+  CURRENT=d;
+  const t=d.totals;
+  const tiles=[
     ['Accounts', fmt(t.accounts), `${fmt(d.sources.length)} source${d.sources.length!=1?'s':''} · ${bytesH(t.filesize)}`, 'var(--s1)'],
     ['With breached service', fmt(t.with_service), `${pct(t.with_service,t.accounts).toFixed(0)}% of records`, 'var(--s3)'],
     ['With password', fmt(t.with_password), `${pct(t.with_password,t.accounts).toFixed(0)}% plaintext`, 'var(--s1)'],
@@ -219,81 +257,61 @@ function render(d){
     ['With hash', fmt(t.with_hash), 'hashed secrets', 'var(--s5)'],
     ['Indexed fields', String(d.indexes.filter(x=>x!=='_id_').length+1), d.indexes.join(', '), 'var(--s4)'],
   ];
-  $('#tiles').innerHTML = tiles.map(([k,v,x,c])=>`<div class="tile">
-    <div class="k"><span class="swatch" style="background:${c}"></span>${k}</div>
-    <div class="v tnum">${v}</div><div class="x">${x}</div></div>`).join('');
+  $('#tiles').innerHTML = tiles.map(([k,v,x,c])=>`<div class="tile"><div class="k"><span class="swatch" style="background:${c}"></span>${k}</div><div class="v tnum">${v}</div><div class="x">${esc(x)}</div></div>`).join('');
 
-  // login identity stacked
-  const lt = [['Email', t.email, 'var(--s1)'],['Username', t.username, 'var(--s2)'],['Phone', t.phone, 'var(--s3)']];
-  const ltot = lt.reduce((a,b)=>a+b[1],0) || 1;
+  const lt=[['Email',t.email,'var(--s1)'],['Username',t.username,'var(--s2)'],['Phone',t.phone,'var(--s3)']];
+  const ltot=lt.reduce((a,b)=>a+b[1],0)||1;
   $('#loginStack').innerHTML = lt.map(([k,v,c])=>`<div class="seg" title="${k}: ${fmt(v)} (${pct(v,ltot).toFixed(1)}%)" style="width:${pct(v,ltot)}%;background:${c}"></div>`).join('');
   $('#loginLegend').innerHTML = lt.map(([k,v,c])=>`<div class="li"><span class="swatch" style="background:${c}"></span>${k} <b class="tnum">${fmt(v)}</b> <span class="bpct">${pct(v,ltot).toFixed(1)}%</span></div>`).join('');
 
-  // field coverage
-  const cov = [['Email',t.email],['Username',t.username],['Password',t.with_password],['Service',t.with_service],['Phone',t.phone],['Hash',t.with_hash]];
-  barList($('#coverage'), cov, {max:t.accounts, total:t.accounts});
+  barList($('#coverage'), [['Email',t.email],['Username',t.username],['Password',t.with_password],['Service',t.with_service],['Phone',t.phone],['Hash',t.with_hash]], {max:t.accounts,total:t.accounts});
 
-  // top lists
-  barList($('#topServices'), d.top_services, {color:'var(--s1)'});
-  barList($('#topDomains'), d.top_domains, {color:'var(--s1)'});
-  barList($('#topPw'), d.top_password_basewords, {color:'var(--s5)'});
+  expandable($('#topServices'), {metric:'services', color:'var(--s1)'});
+  expandable($('#topDomains'), {metric:'domains', color:'var(--s1)'});
+  expandable($('#topPw'), {metric:'passwords', color:'var(--s5)'});
 
-  // geography toggle
-  const drawGeo = target=>{
-    const g = target==='service'? d.regions_service : d.regions_email;
-    $('#geoNote').textContent = target==='service'
-      ? 'By breached-service domain zone — geography of the affected platforms.'
-      : 'By email-domain zone — a proxy for victim geography.';
-    barList($('#geoRegions'), g.regions.slice(0,12));
-    barList($('#geoCountries'), g.countries.slice(0,12));
-    document.querySelectorAll('#geoToggle button').forEach(b=>b.setAttribute('aria-pressed', b.dataset.t===target));
-  };
-  drawGeo(window.__geo||'email');
+  const geo = window.__geo||'email';
+  drawGeo(geo);
   document.querySelectorAll('#geoToggle button').forEach(b=>b.onclick=()=>{window.__geo=b.dataset.t; drawGeo(b.dataset.t);});
 
-  // sources table
   $('#sources tbody').innerHTML = d.sources.map(s=>`<tr>
-    <td class="tnum">${s.source_id??'?'}</td>
-    <td title="${s.name}">${String(s.name).split('/').pop()}</td>
-    <td><span class="fmt">${s.parser_format||'?'}</span></td>
-    <td class="num tnum">${fmt(s.total_accounts)}</td>
-    <td class="num tnum">${fmt(s.login_types.email)}</td>
-    <td class="num tnum">${fmt(s.login_types.username)}</td>
-    <td class="num tnum">${fmt(s.login_types.phone)}</td>
+    <td class="tnum">${s.source_id??'?'}</td><td title="${esc(s.name)}">${esc(String(s.name).split('/').pop())}</td>
+    <td><span class="fmt">${esc(s.parser_format||'?')}</span></td>
+    <td class="num tnum">${fmt(s.total_accounts)}</td><td class="num tnum">${fmt(s.login_types.email)}</td>
+    <td class="num tnum">${fmt(s.login_types.username)}</td><td class="num tnum">${fmt(s.login_types.phone)}</td>
     <td class="num tnum">${fmt(s.with_password)}</td></tr>`).join('');
 }
 
-function setStatus(live){
+function drawGeo(target){
+  $('#geoNote').textContent = target==='service'
+    ? 'By breached-service domain zone — geography of the affected platforms.'
+    : 'By email-domain zone — a proxy for victim geography.';
+  expandable($('#geoRegions'), {metric:'regions', target});
+  expandable($('#geoCountries'), {metric:'countries', target});
+  expandable($('#geoZones'), {metric:'zones', target});
+  document.querySelectorAll('#geoToggle button').forEach(b=>b.setAttribute('aria-pressed', b.dataset.t===target));
+}
+
+function setStatus(live){ LIVE=live;
   $('#status').innerHTML = `<span class="dot ${live?'':'sample'}"></span><span id="statusText">${live?'live database':'sample data (backend offline)'}</span>`;
-  $('#asof').textContent = ' · ' + new Date().toLocaleString();
+  $('#asof').textContent = ' · '+new Date().toLocaleString();
 }
 
 async function load(){
-  // paint embedded data immediately so there is never a blank screen…
-  if(SAMPLE){ render(SAMPLE); setStatus(false); }
-  else { $('#statusText').textContent='loading…'; }
-  // …then upgrade to the live backend if it answers
+  if(SAMPLE){ render(SAMPLE); setStatus(false); } else { $('#statusText').textContent='loading…'; }
   try{
-    const ctl = new AbortController(); const to=setTimeout(()=>ctl.abort(),4000);
-    const r = await fetch('api/summary',{signal:ctl.signal}); clearTimeout(to);
+    const ctl=new AbortController(); const to=setTimeout(()=>ctl.abort(),4000);
+    const r=await fetch('api/summary',{signal:ctl.signal}); clearTimeout(to);
     if(!r.ok) throw new Error('http '+r.status);
-    const d = await r.json();
-    if(d.error) throw new Error(d.error);
-    render(d); setStatus(true);
-  }catch(e){
-    if(!SAMPLE) $('#tiles').innerHTML = `<div class="tile err">Backend unreachable: ${e.message}</div>`;
-  }
+    const d=await r.json(); if(d.error) throw new Error(d.error);
+    setStatus(true); render(d);
+  }catch(e){ if(!SAMPLE) $('#tiles').innerHTML=`<div class="tile err">Backend unreachable: ${esc(e.message)}</div>`; }
 }
 
-// theme toggle: auto -> light -> dark -> auto
-(function(){
-  let mode = 'auto';
-  try{ mode = localStorage.getItem('cs-theme')||'auto'; }catch(e){}
-  const apply = m => { document.documentElement.setAttribute('data-theme', m); try{localStorage.setItem('cs-theme',m)}catch(e){} };
-  apply(mode);
-  $('#theme').onclick = ()=>{ mode = mode==='auto'?'light':mode==='light'?'dark':'auto'; apply(mode); };
-})();
-$('#refresh').onclick = load;
+(function(){ let mode='auto'; try{mode=localStorage.getItem('cs-theme')||'auto'}catch(e){}
+  const apply=m=>{document.documentElement.setAttribute('data-theme',m); try{localStorage.setItem('cs-theme',m)}catch(e){}};
+  apply(mode); $('#theme').onclick=()=>{mode=mode==='auto'?'light':mode==='light'?'dark':'auto'; apply(mode);}; })();
+$('#refresh').onclick=load;
 load();
 </script>
 </body>

@@ -79,16 +79,18 @@ class Source():
         self.description = ''
         # SHA1 hash of file
         self._hash = None
-        # top (email) domains
-        self.domains = {}
+        # top (email) domains  (bounded so a 250 GB file can't exhaust RAM)
+        self.domains = BoundedCounter(500000)
         # top base words from passwords
-        self.password_basewords = {}
+        self.password_basewords = BoundedCounter(500000)
         # top base words from misc/description field
-        self.misc_basewords = {}
-        # DFIR enhancement: per-source histograms for fast regional / service stats
-        self.email_tlds = {}        # email-domain zone -> count  (victim geography)
-        self.services = {}          # breached service host -> count
-        self.service_tlds = {}      # service zone -> count
+        self.misc_basewords = BoundedCounter(500000)
+        # DFIR enhancement: per-source histograms for fast regional / service stats.
+        # TLD counters get a high cap so zone/region stats stay exact (TLDs are
+        # naturally bounded); host/baseword counters prune their long tail.
+        self.email_tlds = BoundedCounter(2000000)   # email-domain zone -> count (victim geography)
+        self.services = BoundedCounter(500000)       # breached service host -> count
+        self.service_tlds = BoundedCounter(2000000)  # service zone -> count
         # login-type + phone tallies
         self.login_types = {'email': 0, 'username': 0, 'phone': 0}
         self.phone_count = 0
@@ -127,12 +129,7 @@ class Source():
 
     @staticmethod
     def _tally(d, key):
-        if not key:
-            return
-        try:
-            d[key] += 1
-        except KeyError:
-            d[key] = 1
+        d.bump(key)
 
     def increment(self, account):
 
@@ -161,19 +158,11 @@ class Source():
         if account.password:
             self.with_password += 1
             for word in word_regex.findall(account.password):
-                word = word.lower()
-                try:
-                    self.password_basewords[word] += 1
-                except KeyError:
-                    self.password_basewords[word] = 1
+                self.password_basewords.bump(word.lower())
 
         if account.misc:
             for word in word_regex.findall(account.misc):
-                word = word.lower()
-                try:
-                    self.misc_basewords[word] += 1
-                except KeyError:
-                    self.misc_basewords[word] = 1
+                self.misc_basewords.bump(word.lower())
 
 
     def top_domains(self, limit=10):

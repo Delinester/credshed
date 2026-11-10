@@ -16,6 +16,7 @@
 #     DFIR ("which of our users had an account on X?").
 #   * Degrade gracefully on malformed rows (absorb any email/hash it can find).
 
+import re
 import json
 import logging
 import statistics
@@ -28,8 +29,9 @@ from .. import validation
 log = logging.getLogger('credshed.smartparse')
 
 
-# delimiter candidates, in rough priority order
-_DELIMS = [':', ';', '|', '\t', ',']
+# delimiter candidates, in rough priority order (space is last-resort, for
+# whitespace-separated dumps that use no real delimiter)
+_DELIMS = [':', ';', '|', '\t', ',', ' ']
 
 # header-name synonyms -> canonical field, for CSV / JSON-lines dumps
 _FIELD_SYNONYMS = {
@@ -37,7 +39,7 @@ _FIELD_SYNONYMS = {
     'username': {'username', 'user', 'login', 'user_name', 'login_name', 'nick',
                  'nickname', 'screenname', 'handle', 'account', 'uid', 'userid'},
     'password': {'password', 'pass', 'passwd', 'pwd', 'plaintext', 'plain',
-                 'clear', 'cleartext', 'pwd_plain'},
+                 'clear', 'cleartext', 'pwd_plain', 'secret', 'credential', 'passphrase'},
     'hash':     {'hash', 'passhash', 'password_hash', 'pwdhash', 'md5', 'sha1',
                  'sha256', 'bcrypt', 'hashed_password', 'pass_hash'},
     'phone':    {'phone', 'tel', 'telephone', 'mobile', 'msisdn', 'phone_number',
@@ -54,11 +56,27 @@ for _canon, _syns in _FIELD_SYNONYMS.items():
         _HEADER_LOOKUP[_s] = _canon
 
 _STRIP = ' \t\'"'
+# hard cap on a single line we will try to parse — protects against a
+# pathologically long line in a huge dump blowing up memory/CPU
+MAX_LINE = 65536
 
 # SQL dump scaffolding that File.sql_split_insert leaves behind between value
 # rows - skip it so the actual `(...)` value tuples parse as clean tabular data.
 _SQL_NOISE = ('insert into', 'values (', 'values(', '/*', '*/', '-- ',
               'create table', 'drop table', 'lock tables', 'unlock tables', 'set ')
+
+
+# stealer-log "Key: value" block fields (RedLine / Vidar / Raccoon style records)
+_BLOCK_KEY = re.compile(r'^\s*(soft|application|url|host|link|login|user(?:name)?|e-?mail|'
+                        r'pass(?:word)?|pwd|hash)\s*[:=]\s*(.*)$', re.I)
+_BLOCK_SEP = re.compile(r'^\s*[=\-*_~#.]{3,}\s*$')
+_BLOCK_CANON = {
+    'url': 'service', 'host': 'service', 'link': 'service',
+    'login': 'login', 'user': 'login', 'username': 'login', 'email': 'login', 'e-mail': 'login',
+    'pass': 'password', 'password': 'password', 'pwd': 'password',
+    'hash': 'hash',
+    # 'soft'/'application' intentionally dropped (not a credential field)
+}
 
 
 def _is_sql_noise(line):
@@ -202,7 +220,11 @@ class SmartParse:
     def _sniff(self):
         sample = self._sample()
         if not sample:
-            raise TextParseError(f'Error reading (or empty) file: {self.file}')
+            # empty / whitespace-only / all-noise file: don't crash a bulk
+            # directory import, just parse to zero accounts
+            self.format = 'empty'
+            log.info(f'No parseable lines in {self.file}')
+            return
 
         # --- JSON-lines ---
         head = sample[:200]
@@ -219,6 +241,13 @@ class SmartParse:
                 self.format = 'jsonl'
                 log.info(f'Detected format: JSON-lines in {self.file}')
                 return
+
+        # --- stealer-log "Key: value" blocks (multi-line records) ---
+        bhits = sum(1 for l in sample if _BLOCK_KEY.match(l))
+        if bhits / len(sample) > 0.5:
+            self.format = 'blocks'
+            log.info(f'Detected format: stealer-log key/value blocks in {self.file}')
+            return
 
         # --- delimiter ---
         self.delimiter = self._best_delimiter(sample)
@@ -358,6 +387,12 @@ class SmartParse:
             return
 
         first = parts[0].strip(_STRIP)
+        # hash-first (e.g. a hashcat potfile  <hash>:<cracked plaintext>)
+        if not scheme and validation.is_hash(first):
+            secret = self.delimiter.join(parts[1:]).strip()
+            yield Account(hashes=[first], password=secret)
+            return
+
         # URL:login:password  (service URL may carry :port and /path)
         if scheme or validation.is_url_like(first):
             r = self._ulp_split(parts, scheme)
@@ -477,6 +512,58 @@ class SmartParse:
         except AccountCreationError:
             return
 
+    def _emit_block(self, cur):
+        '''build an Account from an accumulated {service,login,password,hash} record'''
+        if not cur:
+            return None
+        login = cur.get('login', '')
+        kw = self._route_login(login) if login else {}
+        try:
+            return Account(service=cur.get('service', ''), password=cur.get('password', ''),
+                           hashes=[cur['hash']] if cur.get('hash') else [], **kw)
+        except AccountCreationError:
+            return None
+
+    def _parse_blocks(self):
+        '''
+        Stateful parser for multi-line stealer-log records, e.g.:
+            URL: https://site.com/login
+            Username: bob@x.com
+            Password: hunter2
+            =====================
+        A record ends at a blank line, a separator line, or when a new URL/host
+        field starts while the current record already has a secret.
+        '''
+        cur = {}
+        for line in self.file:
+            self.stats['lines_total'] += 1
+            s = line.strip()
+            if not s or _BLOCK_SEP.match(s):
+                acc = self._emit_block(cur)
+                cur = {}
+                if acc:
+                    self.stats['accounts'] += 1
+                    yield acc
+                continue
+            m = _BLOCK_KEY.match(line)
+            if not m:
+                continue
+            canon = _BLOCK_CANON.get(m.group(1).strip().lower())
+            val = m.group(2).strip()
+            if not canon or not val:
+                continue
+            if canon == 'service' and cur.get('service') and (cur.get('password') or cur.get('login') or cur.get('hash')):
+                acc = self._emit_block(cur)
+                cur = {}
+                if acc:
+                    self.stats['accounts'] += 1
+                    yield acc
+            cur[canon] = val
+        acc = self._emit_block(cur)
+        if acc:
+            self.stats['accounts'] += 1
+            yield acc
+
     def _absorb(self, line):
         '''
         last-resort salvage: pull every email out of the line (with nearby
@@ -521,6 +608,13 @@ class SmartParse:
             'jsonl': self._parse_jsonl,
             'generic': self._parse_generic,
         }
+        if self.format == 'empty':
+            return
+        # stealer-log blocks need a stateful, multi-line parser
+        if self.format == 'blocks':
+            yield from self._parse_blocks()
+            return
+
         parse = dispatch.get(self.format, self._parse_delimited)
         skip_header = (self.format == 'csv')
         # SQL scaffolding only appears in files parsed as generic/combo/mixed;
@@ -532,6 +626,8 @@ class SmartParse:
             if not line.strip():
                 self.stats['lines_blank'] += 1
                 continue
+            if len(line) > MAX_LINE:
+                line = line[:MAX_LINE]
             if sql_possible and _is_sql_noise(line):
                 self.stats['lines_blank'] += 1
                 continue

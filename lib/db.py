@@ -267,6 +267,10 @@ class DB():
             # reverse search: "who used this password?"
             query = {'p': keyword}
 
+        elif query_type == 'hash':
+            # reverse search by hash value (e.g. look a hash up against potfile data)
+            query = {'h': keyword}
+
         elif query_type == 'phone':
             norm = validation.normalize_phone(keyword)
             if not norm:
@@ -301,7 +305,7 @@ class DB():
     # DFIR enhancement: index management.  Bulk-load with no secondary indexes
     # (fast writes), then build only the dimensions a given engagement needs.
     SECONDARY_INDEX_FIELDS = {
-        'u': 'username', 'p': 'password', 't': 'phone', 'v': 'service',
+        'u': 'username', 'p': 'password', 't': 'phone', 'v': 'service', 'h': 'hash',
     }
 
     def build_indexes(self, fields=None):
@@ -373,7 +377,7 @@ class DB():
         items = sorted(agg.items(), key=lambda x: x[1], reverse=True)
         return items[:limit] if limit else items
 
-    def global_summary(self, top_n=15):
+    def global_summary(self, top_n=15, zones_top=60):
         '''
         One fast, account-scan-free snapshot of the whole database, assembled
         purely from the per-source histograms in the `sources` collection.
@@ -435,8 +439,8 @@ class DB():
             'top_domains': top(domains),
             'top_services': top(services),
             'top_password_basewords': top(pw_words),
-            'regions_email': self._regions_from_hist(email_tld),
-            'regions_service': self._regions_from_hist(service_tld),
+            'regions_email': self._regions_from_hist(email_tld, zones_top),
+            'regions_service': self._regions_from_hist(service_tld, zones_top),
         }
 
     def _regions_from_hist(self, hist, zones_top=60):
@@ -691,11 +695,11 @@ class DB():
             'files': [str(source.file)],
             'filesize': source.file.size,
             'description': source.description,
-            'top_domains': self._escape_keys(source.top_domains(100)),
-            'top_misc_basewords': source.top_misc_basewords(100),
-            'top_password_basewords': source.top_password_basewords(100),
+            'top_domains': self._escape_keys(source.top_domains(1000)),
+            'top_misc_basewords': source.top_misc_basewords(200),
+            'top_password_basewords': source.top_password_basewords(1000),
             # DFIR enhancement: per-source histograms powering fast regional / service stats
-            'top_services': self._escape_keys(source.top_services(100)),
+            'top_services': self._escape_keys(source.top_services(1000)),
             'email_tld_hist': self._escape_keys(source.email_tld_histogram()),
             'service_tld_hist': self._escape_keys(source.service_tld_histogram()),
             'login_types': source.login_types,
@@ -773,10 +777,10 @@ class DB():
                 sources.update_one,
                 {'_id': source.hash}, {
                     '$set': {
-                        'top_domains': self._escape_keys(source.top_domains(100)),
-                        'top_misc_basewords': source.top_misc_basewords(100),
-                        'top_password_basewords': source.top_password_basewords(100),
-                        'top_services': self._escape_keys(source.top_services(100)),
+                        'top_domains': self._escape_keys(source.top_domains(1000)),
+                        'top_misc_basewords': source.top_misc_basewords(200),
+                        'top_password_basewords': source.top_password_basewords(1000),
+                        'top_services': self._escape_keys(source.top_services(1000)),
                         'email_tld_hist': self._escape_keys(source.email_tld_histogram()),
                         'service_tld_hist': self._escape_keys(source.service_tld_histogram()),
                         'login_types': source.login_types,

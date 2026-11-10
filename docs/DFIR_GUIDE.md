@@ -170,3 +170,38 @@ python3 tools/test_parser_formats.py tests/fixtures/leak_formats   # coverage re
 ```
 
 All generated content is randomly synthesized and must never be treated as real.
+
+Covered formats: `email:pass`, `email;pass`, `user:pass`, `email:hash`, `email:hash:salt`,
+ULP `url:login:pass` (plain, with `https://` scheme, with `:port`, with phone logins),
+pipe / tab / space / CSV(+header, +BOM) / SQL `INSERT` / JSON-lines, **hashcat potfiles**
+(`hash:plaintext`), **multi-line stealer-log blocks** (`URL:` / `Login:` / `Password:`),
+Latin-1 text, and deliberately dirty / mixed files.
+
+---
+
+## Scaling & very large files
+
+Credshed streams; it never loads a dump into RAM. Ingesting a file far larger than
+memory (hundreds of GB) is bounded on memory by design:
+
+- **Line-by-line streaming.** Files are read a line at a time, and a single read is
+  capped at 1 MiB — so even a file with no (or extremely sparse) newlines is emitted
+  in bounded chunks instead of being buffered whole. Individual lines over 64 KiB are
+  truncated for parsing.
+- **Bounded statistics.** The per-source histograms (domains, services, base-words)
+  that feed the stats use a `BoundedCounter` that caps distinct keys and prunes the
+  long tail, so a dump with tens of millions of distinct hosts cannot exhaust RAM.
+  Heavy hitters (which drive top-N and regional stats) keep exact counts; only the
+  rarely-seen tail is approximate. TLD/zone counters are kept effectively exact.
+- **Batched, index-free bulk writes.** Accounts are upserted in small batches with an
+  unacknowledged write concern. Build secondary indexes *after* a big load.
+- **Two sequential passes.** A file is read once to hash it (for dedup) and once to
+  parse it. For a 250 GB file that is I/O-bound (disk throughput), not memory-bound.
+
+Practical guidance for a huge file: load with no secondary indexes, give MongoDB a
+data directory on a large, fast disk (`MONGO_DATA` in the Proxmox installer), and run
+`--build-indexes` afterward for the dimensions you need.
+
+Edge cases handled without crashing: empty / whitespace-only / all-junk files (skipped
+to zero accounts), NUL bytes and control characters, CRLF, BOM, mixed encodings,
+passwords containing the delimiter, and pathologically long lines.
