@@ -208,9 +208,12 @@ class Source():
     def progress(self):
 
         try:
-            return f'{self.total_accounts:,} / {bytes_to_human(self._accounts.file.size)}'
-        except (NameError, AttributeError, TypeError):
-            return f'{self.total_accounts:,}'
+            total = self.file.size
+            done = self.file.bytes_read
+            pct = (done / total * 100) if total else 0.0
+            return f'{self.total_accounts:,} rows ({pct:.1f}% of {bytes_to_human(total)})'
+        except (NameError, AttributeError, TypeError, ZeroDivisionError):
+            return f'{self.total_accounts:,} rows'
 
 
     def __iter__(self):

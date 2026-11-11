@@ -249,6 +249,19 @@ class File(type(pathlib.Path())):
         return self._size
 
 
+    @property
+    def bytes_read(self):
+        '''
+        Bytes consumed so far by the active read (for %-complete / ETA progress).
+        Uses the underlying buffered reader's offset; 0 when not currently reading.
+        Slightly optimistic (read-ahead), which is fine for a progress indicator.
+        '''
+        try:
+            return min(self._f.buffer.tell(), self.size)
+        except (AttributeError, ValueError, OSError):
+            return 0
+
+
 
     def __iter__(self):
 
