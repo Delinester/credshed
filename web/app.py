@@ -39,6 +39,7 @@ app = FastAPI(title='Credshed Statistics', docs_url='/api/docs', version='2.1')
 
 _cs = None
 _cache = {'t': 0.0, 'data': None}
+_src_cache = {}   # source_id -> (timestamp, detail dict)
 
 # How deep the cached aggregation goes (the dashboard's "Show all" browses this).
 FULL_TOP = 2000      # top services / domains / password base-words
@@ -105,6 +106,23 @@ def api_list(metric: str, target: str = 'email'):
         return JSONResponse({'metric': metric, 'target': target, 'count': len(items), 'items': items})
     except CredShedError as e:
         return JSONResponse({'error': str(e)}, status_code=503)
+
+
+@app.get('/api/source/{source_id}')
+def api_source(source_id: int):
+    '''Detailed statistics for one ingested dataset (source) — powers the modal.'''
+    try:
+        now = time.time()
+        hit = _src_cache.get(source_id)
+        if hit and (now - hit[0]) < CACHE_TTL:
+            return JSONResponse(hit[1])
+        data = credshed().db.source_detail(source_id, top_n=FULL_TOP, zones_top=FULL_ZONES)
+        _src_cache[source_id] = (now, data)
+        return JSONResponse(data)
+    except CredShedError as e:
+        return JSONResponse({'error': str(e)}, status_code=404)
+    except Exception as e:  # pragma: no cover
+        return JSONResponse({'error': f'{type(e).__name__}: {e}'}, status_code=500)
 
 
 @app.get('/api/health')

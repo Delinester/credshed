@@ -106,6 +106,24 @@
   .fmt{font-size:11px; background:var(--surface-2); border:1px solid var(--border); padding:1px 7px; border-radius:999px; color:var(--ink-2)}
   footer{margin-top:30px; color:var(--muted); font-size:12px; text-align:center}
   .err{color:var(--s2)}
+
+  /* per-dataset detail */
+  #sources tbody tr.clickable{cursor:pointer}
+  .viewcell{color:var(--s1); font-size:12px; white-space:nowrap; text-align:right}
+  .modal-backdrop{position:fixed; inset:0; z-index:50; background:rgba(11,11,11,.46);
+    backdrop-filter:blur(2px); display:flex; align-items:flex-start; justify-content:center;
+    padding:28px 16px; overflow-y:auto}
+  .modal{background:var(--plane); border:1px solid var(--border); border-radius:var(--r);
+    box-shadow:0 12px 44px rgba(0,0,0,.4); width:100%; max-width:1000px; margin:auto}
+  .modal-head{position:sticky; top:0; z-index:2; display:flex; align-items:flex-start; gap:12px;
+    padding:15px 18px; border-bottom:1px solid var(--border); border-radius:var(--r) var(--r) 0 0;
+    background:color-mix(in srgb,var(--plane) 90%, transparent); backdrop-filter:saturate(1.3) blur(8px)}
+  .modal-head h2{margin:0; font-size:17px; font-weight:720; word-break:break-all}
+  .modal-head .meta{color:var(--muted); font-size:12px; margin-top:4px; display:flex; flex-wrap:wrap; gap:4px 9px; align-items:center}
+  .modal-body{padding:4px 18px 22px}
+  .modal-body .tiles{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  .xbtn{margin-left:auto; flex:none}
+  .warn{color:var(--s4)}
 </style>
 </head>
 <body>
@@ -169,8 +187,9 @@
     <table id="sources"><thead><tr>
       <th>#</th><th>Source</th><th>Format</th>
       <th class="num">Accounts</th><th class="num">Email</th><th class="num">Username</th>
-      <th class="num">Phone</th><th class="num">w/ password</th>
+      <th class="num">Phone</th><th class="num">w/ password</th><th></th>
     </tr></thead><tbody></tbody></table>
+    <p class="note" style="padding:4px 10px 8px; margin:0">Select a dataset for its detailed breakdown.</p>
   </section>
 
   <footer>Statistics only — this dashboard exposes aggregate numbers, never individual credentials.<span id="asof"></span></footer>
@@ -203,11 +222,12 @@ function barsHTML(items, {max, total, color='var(--s1)'}={}){
 function barList(el, items, opts={}){ el.innerHTML = `<div class="bars">${barsHTML(items, opts)}</div>`; }
 
 // expandable bar list: top N, then "Show all" -> scrollable + filterable full list
-function expandable(mount, {metric, target, color, total, top=12}){
-  const items = listFromCurrent(metric, target) || [];
-  const topItems = items.slice(0, top);
+function expandable(mount, {metric, target, color, total, top=12, items=null}){
+  const all = items || listFromCurrent(metric, target) || [];
+  const topItems = all.slice(0, top);
+  const canExpand = all.length>top || (LIVE && !items);
   mount.innerHTML = `<div class="bars">${barsHTML(topItems,{total,color})}</div>` +
-    (items.length>top || LIVE ? `<button class="more">Show all ▾</button>` : '');
+    (canExpand ? `<button class="more">Show all ▾</button>` : '');
   const btn = mount.querySelector('.more');
   if(!btn) return;
   let open=false, full=null;
@@ -215,7 +235,7 @@ function expandable(mount, {metric, target, color, total, top=12}){
     open=!open;
     if(!open){ mount.querySelector('.listwrap')?.remove(); btn.textContent='Show all ▾'; return; }
     btn.textContent='Loading…';
-    full = await getFull(metric, target);
+    full = items || await getFull(metric, target);
     const wrap=document.createElement('div'); wrap.className='listwrap';
     const m = Math.max(1, ...full.map(d=>d[1]));
     wrap.innerHTML = `<input class="filter" placeholder="Filter ${full.length.toLocaleString()} entries…">
@@ -274,12 +294,13 @@ function render(d){
   drawGeo(geo);
   document.querySelectorAll('#geoToggle button').forEach(b=>b.onclick=()=>{window.__geo=b.dataset.t; drawGeo(b.dataset.t);});
 
-  $('#sources tbody').innerHTML = d.sources.map(s=>`<tr>
+  $('#sources tbody').innerHTML = d.sources.map(s=>`<tr class="clickable" data-sid="${s.source_id}" title="View detailed statistics">
     <td class="tnum">${s.source_id??'?'}</td><td title="${esc(s.name)}">${esc(String(s.name).split('/').pop())}</td>
     <td><span class="fmt">${esc(s.parser_format||'?')}</span></td>
     <td class="num tnum">${fmt(s.total_accounts)}</td><td class="num tnum">${fmt(s.login_types.email)}</td>
     <td class="num tnum">${fmt(s.login_types.username)}</td><td class="num tnum">${fmt(s.login_types.phone)}</td>
-    <td class="num tnum">${fmt(s.with_password)}</td></tr>`).join('');
+    <td class="num tnum">${fmt(s.with_password)}</td><td class="viewcell">View ›</td></tr>`).join('');
+  $('#sources tbody').querySelectorAll('tr.clickable').forEach(tr=>tr.onclick=()=>openSourceDetail(tr.dataset.sid));
 }
 
 function drawGeo(target){
@@ -291,6 +312,111 @@ function drawGeo(target){
   expandable($('#geoZones'), {metric:'zones', target});
   document.querySelectorAll('#geoToggle button').forEach(b=>b.setAttribute('aria-pressed', b.dataset.t===target));
 }
+
+// ---- per-dataset detail modal -----------------------------------------------
+function sTile(k,v,x,c){ return `<div class="tile"><div class="k"><span class="swatch" style="background:${c}"></span>${k}</div><div class="v tnum">${v}</div><div class="x">${esc(x)}</div></div>`; }
+function dList(mount, items, color){ expandable(mount, {items: items||[], color, top:12}); }
+function closeModal(){ document.querySelector('.modal-backdrop')?.remove(); document.body.style.overflow=''; }
+
+function renderDetailModal(d){
+  closeModal();
+  const t=d.totals||{}, acc=t.accounts||0;
+  const full = !!(d.top_services || d.regions_email);   // live detail vs compact fallback
+  const name=String(d.name||''), base=name.split('/').pop()||name||('Source '+d.source_id);
+  const meta=[`#${d.source_id}`, `format ${esc(d.parser_format||'?')}`];
+  if(d.filesize) meta.push(bytesH(d.filesize));
+  if(d.import_finished===false) meta.push('<span class="warn">import incomplete</span>');
+  if(d.created_date) meta.push('ingested '+esc(String(d.created_date).slice(0,19).replace('T',' ')));
+
+  const geoBlock = `
+    <div class="ttl">Geography</div>
+    <section class="grid"><div class="card span2">
+      <div class="rowtop"><div><h3 style="margin-bottom:2px">Regional exposure</h3><p class="note" id="mGeoNote"></p></div>
+        <div class="seg-ctl" id="mGeoToggle"><button data-t="email" aria-pressed="true">Victim (email)</button><button data-t="service" aria-pressed="false">Platform (service)</button></div></div>
+      <div class="grid" style="margin-top:4px; gap:16px">
+        <div><div class="note" style="margin:0 0 6px">By region</div><div id="mGeoRegions"></div></div>
+        <div><div class="note" style="margin:0 0 6px">By country</div><div id="mGeoCountries"></div></div>
+        <div><div class="note" style="margin:0 0 6px">By TLD zone</div><div id="mGeoZones"></div></div>
+      </div></div></section>
+    <div class="ttl">Top lists</div>
+    <section class="grid">
+      <div class="card"><h3>Breached services</h3><p class="note">Most common platforms in this dataset.</p><div id="mServices"></div></div>
+      <div class="card"><h3>Email providers</h3><p class="note">Most common email domains.</p><div id="mDomains"></div></div>
+      <div class="card"><h3>Password base-words</h3><p class="note">Most common roots in plaintext passwords.</p><div id="mPw"></div></div>
+      <div class="card"><h3>Context base-words</h3><p class="note">Most common words in the misc field.</p><div id="mMisc"></div></div>
+    </section>`;
+
+  const back=document.createElement('div'); back.className='modal-backdrop';
+  back.innerHTML = `<div class="modal" role="dialog" aria-modal="true" aria-label="Dataset detail">
+    <div class="modal-head">
+      <div style="min-width:0"><h2>${esc(base)}</h2>
+        <div class="meta">${meta.join('<span>·</span>')}</div>
+        <div class="note" style="margin-top:4px; word-break:break-all">${esc(name)}${d.files&&d.files.length>1?` · +${d.files.length-1} more file(s)`:''}</div>
+      </div>
+      <button class="xbtn" id="mClose">✕ Close</button>
+    </div>
+    <div class="modal-body">
+      <section class="tiles" id="mTiles"></section>
+      <div class="ttl">Composition</div>
+      <section class="grid">
+        <div class="card"><h3>Login identity</h3><p class="note">How these records identify their owner.</p><div id="mStack" class="stack"></div><div id="mLegend" class="legend"></div></div>
+        <div class="card"><h3>Field coverage</h3><p class="note">Share of records populating each field.</p><div id="mCov" class="bars"></div></div>
+      </section>
+      ${full ? geoBlock : `<p class="note warn" style="margin-top:16px">Top domains, services, base-words and regional stats for this dataset are available when the dashboard is connected to the live database.</p>`}
+    </div></div>`;
+  document.body.appendChild(back);
+  document.body.style.overflow='hidden';
+  back.onclick=e=>{ if(e.target===back) closeModal(); };
+  back.querySelector('#mClose').onclick=closeModal;
+
+  back.querySelector('#mTiles').innerHTML=[
+    sTile('Accounts', fmt(acc), `${esc(d.parser_format||'?')}${d.filesize?' · '+bytesH(d.filesize):''}`, 'var(--s1)'),
+    sTile('With breached service', fmt(t.with_service), `${pct(t.with_service,acc).toFixed(0)}% of records`, 'var(--s3)'),
+    sTile('With password', fmt(t.with_password), `${pct(t.with_password,acc).toFixed(0)}% plaintext`, 'var(--s1)'),
+    sTile('With phone', fmt(t.phone), `${pct(t.phone,acc).toFixed(1)}% of records`, 'var(--s2)'),
+    sTile('With hash', fmt(t.with_hash), 'hashed secrets', 'var(--s5)'),
+  ].join('');
+
+  const lt=[['Email',t.email||0,'var(--s1)'],['Username',t.username||0,'var(--s2)'],['Phone',t.phone||0,'var(--s3)']];
+  const ltot=lt.reduce((a,b)=>a+b[1],0)||1;
+  back.querySelector('#mStack').innerHTML=lt.map(([k,v,c])=>`<div class="seg" title="${k}: ${fmt(v)} (${pct(v,ltot).toFixed(1)}%)" style="width:${pct(v,ltot)}%;background:${c}"></div>`).join('');
+  back.querySelector('#mLegend').innerHTML=lt.map(([k,v,c])=>`<div class="li"><span class="swatch" style="background:${c}"></span>${k} <b class="tnum">${fmt(v)}</b> <span class="bpct">${pct(v,ltot).toFixed(1)}%</span></div>`).join('');
+
+  barList(back.querySelector('#mCov'), [['Email',t.email||0],['Username',t.username||0],['Password',t.with_password||0],['Service',t.with_service||0],['Phone',t.phone||0],['Hash',t.with_hash||0]], {max:acc,total:acc});
+
+  if(full){
+    dList(back.querySelector('#mServices'), d.top_services, 'var(--s1)');
+    dList(back.querySelector('#mDomains'), d.top_domains, 'var(--s1)');
+    dList(back.querySelector('#mPw'), d.top_password_basewords, 'var(--s5)');
+    dList(back.querySelector('#mMisc'), d.top_misc_basewords, 'var(--s4)');
+    const drawG=target=>{
+      const r=(target==='service'?d.regions_service:d.regions_email)||{zones:[],countries:[],regions:[]};
+      back.querySelector('#mGeoNote').textContent = target==='service' ? 'By breached-service domain zone.' : 'By email-domain zone — victim geography.';
+      dList(back.querySelector('#mGeoRegions'), r.regions, 'var(--s3)');
+      dList(back.querySelector('#mGeoCountries'), r.countries, 'var(--s1)');
+      dList(back.querySelector('#mGeoZones'), r.zones, 'var(--s2)');
+      back.querySelectorAll('#mGeoToggle button').forEach(b=>b.setAttribute('aria-pressed', b.dataset.t===target));
+    };
+    drawG('email');
+    back.querySelectorAll('#mGeoToggle button').forEach(b=>b.onclick=()=>drawG(b.dataset.t));
+  }
+}
+
+async function openSourceDetail(sid){
+  if(LIVE){
+    try{
+      const r=await fetch(`api/source/${sid}`);
+      if(r.ok){ const d=await r.json(); if(!d.error){ renderDetailModal(d); return; } }
+    }catch(e){}
+  }
+  const c=(CURRENT.sources||[]).find(s=>String(s.source_id)===String(sid));
+  renderDetailModal(c ? {
+    source_id:c.source_id, name:c.name, parser_format:c.parser_format, import_finished:c.import_finished, filesize:0,
+    totals:{accounts:c.total_accounts, email:c.login_types.email, username:c.login_types.username, phone:c.login_types.phone,
+      with_password:c.with_password, with_service:c.with_service, with_hash:0}
+  } : {source_id:sid, name:'Source '+sid, parser_format:'?', totals:{}});
+}
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeModal(); });
 
 function setStatus(live){ LIVE=live;
   $('#status').innerHTML = `<span class="dot ${live?'':'sample'}"></span><span id="statusText">${live?'live database':'sample data (backend offline)'}</span>`;

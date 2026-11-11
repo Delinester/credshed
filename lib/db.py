@@ -478,6 +478,55 @@ class DB():
             'regions': sorted(region_rollup.items(), key=lambda x: x[1], reverse=True),
         }
 
+    def source_detail(self, source_id, top_n=2000, zones_top=3000):
+        '''
+        Detailed statistics for ONE ingested source (dataset), assembled from the
+        per-source histograms stored at ingest time — mirrors global_summary but
+        scoped to a single source_id.  Powers the dashboard's per-dataset view.
+        '''
+        s = self.sources.find_one({'source_id': int(source_id)})
+        if not s:
+            raise CredShedError(f'No source with id {source_id}')
+
+        unesc = self._unescape_keys
+        domains     = unesc(s.get('top_domains', {}))
+        services    = unesc(s.get('top_services', {}))
+        email_tld   = unesc(s.get('email_tld_hist', {}))
+        service_tld = unesc(s.get('service_tld_hist', {}))
+        pw   = s.get('top_password_basewords', {}) or {}
+        misc = s.get('top_misc_basewords', {}) or {}
+        lt   = s.get('login_types', {}) or {}
+
+        def top(d):
+            return sorted(d.items(), key=lambda x: x[1], reverse=True)[:top_n]
+
+        return {
+            'source_id': s.get('source_id'),
+            'name': str(s.get('name', '')),
+            'files': [str(f) for f in (s.get('files') or [])],
+            'filesize': int(s.get('filesize', 0) or 0),
+            'parser_format': s.get('parser_format') or 'unknown',
+            'description': str(s.get('description', '') or ''),
+            'created_date': str(s.get('created_date', '') or ''),
+            'modified_date': str(s.get('modified_date', '') or ''),
+            'import_finished': bool(s.get('import_finished', True)),
+            'totals': {
+                'accounts': int(s.get('total_accounts', 0) or 0),
+                'email': int(lt.get('email', 0) or 0),
+                'username': int(lt.get('username', 0) or 0),
+                'phone': int(s.get('phone_count', 0) or 0),
+                'with_password': int(s.get('with_password', 0) or 0),
+                'with_hash': int(s.get('with_hash', 0) or 0),
+                'with_service': int(s.get('with_service', 0) or 0),
+            },
+            'top_domains': top(domains),
+            'top_services': top(services),
+            'top_password_basewords': top(pw),
+            'top_misc_basewords': top(misc),
+            'regions_email': self._regions_from_hist(email_tld, zones_top),
+            'regions_service': self._regions_from_hist(service_tld, zones_top),
+        }
+
 
 
     def add_accounts(self, source, force=False, batch_size=5000):

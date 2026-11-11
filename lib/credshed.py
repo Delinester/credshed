@@ -80,6 +80,9 @@ class CredShed():
     def region_stats(self, target='email'):
         return self.db.region_stats(target=target)
 
+    def source_detail(self, source_id, top_n=2000, zones_top=3000):
+        return self.db.source_detail(source_id, top_n=top_n, zones_top=zones_top)
+
     def build_indexes(self, fields=None):
         return self.db.build_indexes(fields)
 
