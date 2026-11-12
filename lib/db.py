@@ -16,6 +16,7 @@ from . import regions
 from .config import config
 from datetime import datetime
 from multiprocessing import Manager
+from . import ingest_parallel
 
 
 # set up logging
@@ -78,10 +79,15 @@ class DB():
 
 
 
-    def search(self, keyword, query_type='email', limit=10000):
+    def search(self, keyword, query_type='email', limit=10000, max_time_ms=None):
         '''
         searches by keyword using regex
         ~ 2 minutes to regex-search non-indexed 100M-entry DB
+
+        max_time_ms bounds the server-side scan so an un-indexed query (e.g. a
+        password search on a deployment that hasn't built idx_p) can't pin a
+        thread on a full-collection scan — the web API passes a bound; the CLI
+        leaves it None (unbounded) for deliberate long scans.
         '''
 
         query = self._build_query(keyword, query_type)
@@ -89,7 +95,8 @@ class DB():
         for result in self._op(
                 self.accounts.find,
                 query,
-                limit=limit
+                limit=limit,
+                max_time_ms=max_time_ms,
             ):
             try:
                 account = Account.from_document(result)
@@ -388,6 +395,7 @@ class DB():
                   'filesize': 0}
         domains, services, email_tld, service_tld = {}, {}, {}, {}
         pw_words, formats = {}, {}
+        passwords, pw_len = {}, {}
         sources = []
 
         for s in self.sources.find({}):
@@ -414,6 +422,13 @@ class DB():
             merge(service_tld, 'service_tld_hist')
             for k, v in (s.get('top_password_basewords', {}) or {}).items():
                 pw_words[k] = pw_words.get(k, 0) + int(v)
+            for k, v in self._unescape_keys(s.get('top_passwords', {})).items():
+                passwords[k] = passwords.get(k, 0) + int(v)
+            for k, v in (s.get('password_length_hist', {}) or {}).items():
+                try:
+                    pw_len[int(k)] = pw_len.get(int(k), 0) + int(v)
+                except (ValueError, TypeError):
+                    pass
 
             sources.append({
                 'source_id': s.get('source_id'),
@@ -439,6 +454,8 @@ class DB():
             'top_domains': top(domains),
             'top_services': top(services),
             'top_password_basewords': top(pw_words),
+            'top_passwords': top(passwords),
+            'password_lengths': sorted(pw_len.items()),
             'regions_email': self._regions_from_hist(email_tld, zones_top),
             'regions_service': self._regions_from_hist(service_tld, zones_top),
         }
@@ -495,6 +512,8 @@ class DB():
         service_tld = unesc(s.get('service_tld_hist', {}))
         pw   = s.get('top_password_basewords', {}) or {}
         misc = s.get('top_misc_basewords', {}) or {}
+        pwd  = unesc(s.get('top_passwords', {}))
+        plen = s.get('password_length_hist', {}) or {}
         lt   = s.get('login_types', {}) or {}
 
         def top(d):
@@ -523,13 +542,132 @@ class DB():
             'top_services': top(services),
             'top_password_basewords': top(pw),
             'top_misc_basewords': top(misc),
+            'top_passwords': top(pwd),
+            'password_lengths': sorted(((int(k), int(v)) for k, v in plen.items()
+                                        if str(k).isdigit()), key=lambda x: x[0]),
             'regions_email': self._regions_from_hist(email_tld, zones_top),
             'regions_service': self._regions_from_hist(service_tld, zones_top),
         }
 
 
 
-    def add_accounts(self, source, force=False, batch_size=5000):
+    def _domains_in_zone(self, zone, top_n=200):
+        '''
+        Top email domains that belong to a TLD zone, rolled up from the per-source
+        top_domains histograms (no account scan).  Fast + exact for the heavy
+        hitters that the stored histograms keep.
+        '''
+        agg = {}
+        for s in self.sources.find({}, {'top_domains': 1}):
+            for d, c in self._unescape_keys(s.get('top_domains', {})).items():
+                if validation.tld_of(d) == zone:
+                    agg[d] = agg.get(d, 0) + int(c)
+        return sorted(agg.items(), key=lambda x: x[1], reverse=True)[:top_n]
+
+    def tld_detail(self, zone, target='email', top_n=200, sample=30, max_ms=10000):
+        '''
+        DFIR drill-down for ONE domain zone (e.g. ".kz").  Returns the account
+        total, the domains under the zone, and the top passwords / services /
+        usernames used by accounts in it, plus a handful of real sample records —
+        everything an investigator needs to understand a zone's threat landscape.
+
+        target='email'   -> victim geography: accounts whose EMAIL domain is in
+                            the zone (matched on the reversed-domain _id prefix,
+                            so the _id index bounds the scan).
+        target='service' -> accounts whose BREACHED SERVICE is in the zone
+                            (matched on the reversed service field 'v').
+
+        Group stages run with maxTimeMS so a giant generic zone (.com) returns a
+        bounded, best-effort result instead of hanging; ccTLDs are fast.
+        '''
+        zone = str(zone).strip().lower().lstrip('.')
+        if not zone or not re.match(r'^[a-z0-9][a-z0-9.\-]{0,23}$', zone):
+            raise CredShedError(f'Invalid TLD zone: {zone!r}')
+        rev = re.escape(zone[::-1])
+        if target == 'service':
+            match = {'v': {'$regex': rf'^{rev}\.'}}
+        else:
+            match = {'_id': {'$regex': rf'^{rev}\.'}}
+        coll = self.accounts
+
+        # One pass over the zone-matched docs computes the count AND every top-N
+        # list via $facet, instead of 4 separate collection scans — one shared
+        # maxTimeMS budget bounds the whole thing so a giant zone (.com) degrades
+        # gracefully (empty/None) rather than tying up the DB.
+        def grp(field):
+            return [{'$match': {field: {'$type': 'string'}}},
+                    {'$group': {'_id': f'${field}', 'c': {'$sum': 1}}},
+                    {'$sort': {'c': -1}}, {'$limit': int(top_n)}]
+        facets = {'count': [{'$count': 'n'}], 'p': grp('p'), 'u': grp('u')}
+        if target != 'service':
+            facets['v'] = grp('v')
+        total, passwords, usernames, services = None, [], [], []
+        try:
+            res = next(coll.aggregate([{'$match': match}, {'$facet': facets}],
+                                      maxTimeMS=max_ms, allowDiskUse=True), {})
+
+            def unpack(key, reverse=False):
+                out = []
+                for d in res.get(key, []):
+                    k = d.get('_id')
+                    if k:
+                        out.append(((k[::-1] if reverse else k), int(d['c'])))
+                return out
+            cnt = res.get('count') or []
+            total = int(cnt[0]['n']) if cnt else 0
+            passwords = unpack('p')
+            usernames = unpack('u')
+            services = unpack('v', reverse=True) if target != 'service' else []
+        except pymongo.errors.PyMongoError as e:
+            log.warning(f'tld_detail aggregation for .{zone}: {e}')
+
+        domains = self._domains_in_zone(zone, top_n) if target == 'email' else []
+
+        samples = []
+        try:
+            for doc in coll.find(match, limit=int(sample), max_time_ms=max_ms):
+                try:
+                    samples.append(Account.from_document(doc).json)
+                except Exception:
+                    continue
+        except pymongo.errors.PyMongoError:
+            pass
+
+        return {
+            'zone': zone, 'target': target, 'total_accounts': total,
+            'top_domains': domains, 'top_passwords': passwords,
+            'top_services': services, 'top_usernames': usernames,
+            'sample': samples,
+        }
+
+    def search_records(self, keyword, query_type='auto', limit=100, max_time_ms=10000):
+        '''
+        Thin wrapper used by the data-search API: validate the query type, run the
+        indexed search, and return account records as plain dicts (human JSON).
+        Read-only; honours the same per-field indexes the CLI search uses.
+
+        The scan is time-bounded (max_time_ms) so an un-indexed field search can
+        never pin a web worker on a full 19.7M-doc scan; on timeout it returns the
+        partial results gathered so far with truncated=True.
+        '''
+        qt = validation.validate_query_type(keyword, query_type)
+        out = []
+        truncated = False
+        try:
+            for doc in self.search(str(keyword), query_type=qt, limit=int(limit),
+                                   max_time_ms=max_time_ms):
+                try:
+                    out.append(doc.json)
+                except Exception:
+                    continue
+        except pymongo.errors.ExecutionTimeout:
+            truncated = True
+        return {'query': str(keyword), 'type': qt, 'count': len(out),
+                'results': out, 'truncated': truncated}
+
+
+    def add_accounts(self, source, force=False, batch_size=5000, workers=1,
+                     write_threads=2, chunk_factor=8):
         '''
         Given a Source object, import it plus all of its accounts.
 
@@ -541,8 +679,27 @@ class DB():
         file provenance is preserved exactly as the old $setOnInsert/$addToSet did
         (first write wins on the body; every source that saw the account is recorded).
 
+        DFIR enhancement: with workers > 1, a single plain-text file is split into
+        newline-aligned byte ranges and ingested by that many parallel processes
+        (one Mongo connection each), turning a one-core ~30 k/s parse into an
+        N-core, N-write-stream load.  Non-splittable inputs (multi-line 'blocks',
+        compressed, tiny) transparently fall back to this single-threaded path.
+
         https://www.percona.com/blog/2020/05/05/tuning-mongodb-for-bulk-loads/
         '''
+
+        # ---- fast path: parallel single-file ingest -------------------------
+        if workers and workers > 1:
+            if getattr(source, 'parser', None) is None:
+                source.parse(unattended=True)
+            presniff = source.parser.sniff_params()
+            ok, why = ingest_parallel.can_parallelize(source.file, presniff)
+            if ok and source.file.size > (4 * batch_size):
+                return self._add_accounts_parallel(
+                    source, workers, presniff, force=force, batch_size=batch_size,
+                    write_threads=write_threads, chunk_factor=chunk_factor)
+            log.info(f'Parallel ingest not applicable ({why or "file too small"}); '
+                     f'using single-threaded path')
 
         try:
             client = self._get_client()
@@ -597,6 +754,68 @@ class DB():
 
         # update counters, stats, etc.
         self.add_source(source, import_finished=True, force=force, client=client)
+
+
+    def _add_accounts_parallel(self, source, workers, presniff, force=False, batch_size=5000,
+                               write_threads=2, chunk_factor=8):
+        '''
+        Parallel single-file ingest (see add_accounts / lib.ingest_parallel).
+        Assigns the source id, forks `workers` byte-range workers, merges their
+        partial per-source histograms back, then finalizes the source doc.
+        '''
+        # reserve the source id + write the placeholder source doc
+        try:
+            new_source = self.add_source(source, import_finished=False, force=force)
+        except AlreadyInProgressError:
+            return
+        if not (new_source['import_finished'] == False or force):
+            log.warning(f'Skipping file "{source.file}", already in database')
+            self.add_source(source, import_finished=True, force=force)
+            return
+
+        encoding = source.file.encoding
+        total_size = source.file.size
+        import_start = datetime.now()
+        state = {'last': import_start}
+
+        def progress_cb(done):
+            now = datetime.now()
+            if done < total_size and (now - state['last']).total_seconds() < 2:
+                return
+            state['last'] = now
+            elapsed = max(1e-6, (now - import_start).total_seconds())
+            pct = (done / total_size * 100) if total_size else 0.0
+            bps = done / elapsed
+            eta_s = max(0.0, (total_size - done) / bps) if bps > 0 else 0.0
+            eta = f'{int(eta_s // 3600):02d}:{int((eta_s % 3600) // 60):02d}:{int(eta_s % 60):02d}'
+            log.info(f'{source.file.name}: {pct:5.1f}% | '
+                     f'{done // 1000000:,}/{total_size // 1000000:,}MB | '
+                     f'{workers} workers | ETA {eta}')
+
+        log.info(f'Parallel ingest: "{source.file.name}" format={presniff["format"]} '
+                 f'across {workers} workers')
+        partials, all_ok = ingest_parallel.run_parallel_ingest(
+            source, workers, presniff, encoding,
+            batch_size=batch_size, progress_cb=progress_cb,
+            write_threads=write_threads, chunk_factor=chunk_factor)
+
+        # fold partial histograms back so the stored stats match a serial parse
+        ingest_parallel.merge_stats_into_source(source, partials)
+        source.parser = ingest_parallel._FormatHolder(presniff['format'])
+
+        elapsed = max(1e-6, (datetime.now() - import_start).total_seconds())
+        log.info(f'{source.file.name}: done | {source.total_accounts:,} rows | '
+                 f'{source.total_accounts / elapsed:,.0f} accounts/s ingest')
+
+        # finalize: write the merged histograms.  Only mark the import finished if
+        # EVERY worker completed cleanly — a dead/failed worker means a byte range
+        # was not fully written, so we leave import_finished=False (shown as
+        # "[IMPORT INCOMPLETE]") rather than silently recording a partial file as
+        # complete; re-running with --force retries it.
+        if not all_ok:
+            log.error(f'{source.file.name}: PARALLEL IMPORT INCOMPLETE — some rows '
+                      f'may be missing; left unfinished (re-run with --force to retry)')
+        self.add_source(source, import_finished=all_ok, force=force)
 
 
     def _write_batch(self, coll, docs, source_id):
@@ -802,6 +1021,8 @@ class DB():
             'top_domains': self._escape_keys(source.top_domains(1000)),
             'top_misc_basewords': source.top_misc_basewords(200),
             'top_password_basewords': source.top_password_basewords(1000),
+            'top_passwords': self._escape_keys(source.top_passwords(1000)),
+            'password_length_hist': {str(k): v for k, v in source.password_lengths.items()},
             # DFIR enhancement: per-source histograms powering fast regional / service stats
             'top_services': self._escape_keys(source.top_services(1000)),
             'email_tld_hist': self._escape_keys(source.email_tld_histogram()),
@@ -884,6 +1105,8 @@ class DB():
                         'top_domains': self._escape_keys(source.top_domains(1000)),
                         'top_misc_basewords': source.top_misc_basewords(200),
                         'top_password_basewords': source.top_password_basewords(1000),
+            'top_passwords': self._escape_keys(source.top_passwords(1000)),
+            'password_length_hist': {str(k): v for k, v in source.password_lengths.items()},
                         'top_services': self._escape_keys(source.top_services(1000)),
                         'email_tld_hist': self._escape_keys(source.email_tld_histogram()),
                         'service_tld_hist': self._escape_keys(source.service_tld_histogram()),

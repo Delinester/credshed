@@ -209,6 +209,48 @@ def gen(out_dir, rows):
     # 22 — ULP where the URL carries an explicit :port
     files.append(lines('22_url_port.txt', lambda: f'{rnd_service(r)}:{r.choice([8080,443,2082,21,25])}:{rnd_email(r)}:{rnd_pass(r)}'))
 
+    # ---- 10 more real-world ULP (URL:LOGIN:PASSWORD) variants (task 7) --------
+    def rnd_login(r):
+        return r.choice([rnd_email, rnd_user, rnd_phone])(r)
+
+    def rnd_cert(r):
+        import string as _s
+        return ''.join(r.choice(_s.ascii_letters + _s.digits) for _ in range(r.randint(20, 40))) + '=='
+
+    ANDROID_PKGS = ['com.google.android.gm', 'com.facebook.katana', 'com.instagram.android',
+                    'com.whatsapp', 'com.roblox.client', 'com.snapchat.android', 'ru.sberbank.online']
+
+    # 23 — Android app ULP: android://<cert>@<package>/  (modern stealer logs)
+    files.append(lines('23_android_app.txt',
+        lambda: f'android://{rnd_cert(r)}@{r.choice(ANDROID_PKGS)}/:{rnd_login(r)}:{rnd_pass(r)}'))
+    # 24 — URL carries a path + query string full of ':' and '&'
+    files.append(lines('24_url_querystring.txt',
+        lambda: f'https://{rnd_service(r)}/auth/login?next=/dashboard&ref=mail:{rnd_email(r)}:{rnd_pass(r)}'))
+    # 25 — pipe-delimited ULP
+    files.append(lines('25_ulp_pipe.txt',
+        lambda: f'https://{rnd_service(r)}|{rnd_login(r)}|{rnd_pass(r)}'))
+    # 26 — semicolon-delimited ULP
+    files.append(lines('26_ulp_semicolon.txt',
+        lambda: f'https://{rnd_service(r)};{rnd_login(r)};{rnd_pass(r)}'))
+    # 27 — non-http scheme (ftp / ssh / smtp)
+    files.append(lines('27_ulp_ftp.txt',
+        lambda: f'{r.choice(["ftp","ssh","smtp"])}://{rnd_service(r)}:{rnd_user(r)}:{rnd_pass(r)}'))
+    # 28 — explicit :port AND a deep path on the URL
+    files.append(lines('28_ulp_port_path.txt',
+        lambda: f'https://{rnd_service(r)}:{r.choice([8443,8080,2083])}/admin/login.php:{rnd_email(r)}:{rnd_pass(r)}'))
+    # 29 — space-separated ULP
+    files.append(lines('29_ulp_space.txt',
+        lambda: f'https://{rnd_service(r)} {rnd_login(r)} {rnd_pass(r)}'))
+    # 30 — ULP with a trailing country/tag column
+    files.append(lines('30_ulp_trailing_tag.txt',
+        lambda: f'https://{rnd_service(r)}:{rnd_email(r)}:{rnd_pass(r)}:{r.choice(["US","RU","BR","IN","DE"])}'))
+    # 31 — userinfo embedded in the URL (https://user:pass@host)
+    files.append(lines('31_ulp_userinfo.txt',
+        lambda: f'https://{rnd_user(r)}:{rnd_pass(r)}@{rnd_service(r)}:{rnd_email(r)}:{rnd_pass(r)}'))
+    # 32 — reversed order: login:password:URL  (URL last)
+    files.append(lines('32_ulp_url_last.txt',
+        lambda: f'{rnd_email(r)}:{rnd_pass(r)}:https://{rnd_service(r)}'))
+
     return files
 
 

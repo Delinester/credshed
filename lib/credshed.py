@@ -6,6 +6,7 @@ import logging
 from .db import DB
 from .errors import *
 from .source import *
+from .parser import build_presniff_from_spec
 from time import sleep
 
 
@@ -101,17 +102,62 @@ class CredShed():
 
 
 
-    def import_file(self, filename, unattended=True, force=False, stdout=False, force_ascii=False):
+    def preview_file(self, filename, limit=20000, format_spec=None, format_delim=None):
+        '''
+        DFIR triage: parse up to `limit` accounts from a file and return a stats
+        summary + sample records WITHOUT writing anything to the database, so an
+        investigator can see a file's format and content before ingesting it.
+        '''
+        presniff = None
+        if format_spec:
+            presniff = build_presniff_from_spec(format_spec, delimiter=format_delim)
+        source = Source(filename)
+        source.parse(unattended=True, presniff=presniff)
+        samples = []
+        for account in source:
+            if len(samples) < 25:
+                samples.append(account)
+            if source.total_accounts >= limit:
+                break
+        return {
+            'file': str(source.file),
+            'size': source.file.size,
+            'format': getattr(source.parser, 'format', '?'),
+            'delimiter': getattr(source.parser, 'delimiter', None),
+            'scanned': source.total_accounts,
+            'login_types': dict(source.login_types),
+            'with_password': source.with_password,
+            'with_hash': source.with_hash,
+            'with_service': source.with_service,
+            'phone': source.phone_count,
+            'top_domains': list(source.top_domains(8).items()),
+            'top_services': list(source.top_services(8).items()),
+            'samples': samples,
+        }
+
+
+    def import_file(self, filename, unattended=True, force=False, stdout=False, force_ascii=False,
+                    format_spec=None, format_delim=None, workers=1):
         '''
         Takes a filename as input
         Returns a Source() object containing stats such as total accounts
 
         Source(filename) --> Source.parse() --> db.add_accounts(source)
+
+        format_spec: optional custom column layout (e.g. "service:email:password")
+                     that overrides auto-detection; format_delim overrides the
+                     data delimiter.  workers>1 enables parallel single-file ingest.
         '''
 
         log.info(f'Parsing file "{filename}"')
 
         start_time = datetime.now()
+
+        presniff = None
+        if format_spec:
+            presniff = build_presniff_from_spec(format_spec, delimiter=format_delim)
+            log.info(f'Using custom format spec -> {presniff["column_map"]} '
+                     f'(delimiter {presniff["delimiter"]!r})')
 
         source = Source(filename)
         # make sure the file is readable
@@ -122,7 +168,7 @@ class CredShed():
                 log.error(f'Failure reading {filename}')
                 return (0, 0)
 
-        source.parse(unattended=unattended, force_ascii=force_ascii)
+        source.parse(unattended=unattended, force_ascii=force_ascii, presniff=presniff)
 
         if stdout:
             for account in source:
@@ -131,7 +177,7 @@ class CredShed():
         else:
 
             try:
-                self.db.add_accounts(source, force=force)
+                self.db.add_accounts(source, force=force, workers=workers)
 
             except KeyboardInterrupt:
                 if unattended:

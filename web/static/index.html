@@ -124,6 +124,38 @@
   .modal-body .tiles{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
   .xbtn{margin-left:auto; flex:none}
   .warn{color:var(--s4)}
+
+  /* data search + records */
+  .tool{background:var(--surface); border:1px solid var(--border); border-radius:var(--r); box-shadow:var(--shadow); padding:14px 16px; margin-top:12px}
+  .srow{display:flex; gap:9px; flex-wrap:wrap; align-items:center}
+  select,input[type=text]{font:inherit; font-size:14px; color:var(--ink); background:var(--surface-2);
+    border:1px solid var(--border); border-radius:9px; padding:8px 11px}
+  input[type=text].q{flex:1; min-width:190px}
+  button.go{background:var(--s1); color:#fff; border-color:transparent; font-weight:600}
+  button.go:hover{filter:brightness(1.07); background:var(--s1)}
+  .hint{color:var(--muted); font-size:12px; margin:8px 2px 0}
+  .recs{width:100%; border-collapse:collapse; font-size:12.5px; margin-top:4px}
+  .recs th,.recs td{text-align:left; padding:7px 9px; border-bottom:1px solid var(--border);
+    white-space:nowrap; max-width:260px; overflow:hidden; text-overflow:ellipsis; vertical-align:top}
+  .recs th{color:var(--muted); font-weight:650; font-size:11px; letter-spacing:.04em; text-transform:uppercase; position:sticky; top:0; background:var(--surface)}
+  .recs td.mono{font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:12px}
+  .recs tbody tr:hover{background:var(--surface-2)}
+  .recs .pw{color:var(--s2)}
+  .recs .hsh{color:var(--s5); font-family:ui-monospace,monospace}
+  .tag{display:inline-block; font-size:10.5px; background:var(--surface-2); border:1px solid var(--border); border-radius:999px; padding:0 6px; color:var(--ink-2); margin-right:3px}
+  .brow.drill{cursor:pointer}
+  .brow.drill .blabel{color:var(--s1)}
+  .brow.drill:hover{background:var(--surface-2)}
+  .resultbox{margin-top:12px; max-height:520px; overflow:auto}
+  .mini{display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin:2px 0 6px}
+  .mini .m{background:var(--surface-2); border:1px solid var(--border); border-radius:10px; padding:9px 11px}
+  .mini .m .k{font-size:11px; color:var(--ink-2)} .mini .m .v{font-size:19px; font-weight:700; margin-top:2px}
+  .pivot{cursor:pointer; border-bottom:1px dotted transparent}
+  .pivot:hover{color:var(--s1); border-bottom-color:var(--s1)}
+  .rhead{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px}
+  .rhead .sp{flex:1}
+  .xbtn2{font-size:12px; padding:4px 9px}
+  kbd{font-family:ui-monospace,monospace; font-size:11px; background:var(--surface-2); border:1px solid var(--border); border-bottom-width:2px; border-radius:5px; padding:0 5px}
 </style>
 </head>
 <body>
@@ -138,6 +170,30 @@
 </header>
 
 <div class="wrap">
+  <div class="ttl">Search records</div>
+  <section class="tool" id="searchTool">
+    <form class="srow" id="searchForm" autocomplete="off">
+      <select id="qType" title="Field to search">
+        <option value="auto">Auto-detect</option>
+        <option value="email">Email</option>
+        <option value="domain">Domain</option>
+        <option value="tld">TLD / zone</option>
+        <option value="username">Username</option>
+        <option value="password">Password</option>
+        <option value="hash">Hash</option>
+        <option value="phone">Phone</option>
+        <option value="service">Service</option>
+      </select>
+      <input type="text" class="q" id="qText" placeholder="e.g. jdoe@example.com · .kz · P@ssw0rd · roblox.com">
+      <select id="qLimit" title="Max results">
+        <option>100</option><option>250</option><option>500</option><option>1000</option>
+      </select>
+      <button type="submit" class="go">Search ›</button>
+    </form>
+    <p class="hint" id="searchHint">Query the underlying records by any field (password / username / hash / phone / service are exact; email, domain and TLD understand prefixes). Press <kbd>/</kbd> to focus · click any value in the results to <b>pivot</b> a new search on it · export matches to CSV/JSON · click a TLD zone below to drill in.</p>
+    <div class="resultbox" id="results" hidden></div>
+  </section>
+
   <div class="ttl">Overview</div>
   <section class="tiles" id="tiles"></section>
 
@@ -182,6 +238,12 @@
     <div class="card"><h3>Password base-words</h3><p class="note">Most common roots in plaintext passwords.</p><div id="topPw"></div></div>
   </section>
 
+  <div class="ttl">Password intelligence</div>
+  <section class="grid" id="pwIntel">
+    <div class="card"><h3>Most-reused passwords</h3><p class="note">Actual plaintext passwords, most common first.</p><div id="topPwActual"></div></div>
+    <div class="card"><h3>Password length distribution</h3><p class="note">How long the population's passwords are — a weak-password signal.</p><div id="pwLen" class="bars"></div></div>
+  </section>
+
   <div class="ttl">Sources</div>
   <section class="card wide" style="padding:6px 6px 2px; overflow-x:auto">
     <table id="sources"><thead><tr>
@@ -192,7 +254,7 @@
     <p class="note" style="padding:4px 10px 8px; margin:0">Select a dataset for its detailed breakdown.</p>
   </section>
 
-  <footer>Statistics only — this dashboard exposes aggregate numbers, never individual credentials.<span id="asof"></span></footer>
+  <footer>Authorised DFIR use only — internal, access-controlled network. Records and credentials are shown for investigation.<span id="asof"></span></footer>
 </div>
 
 <script>
@@ -205,13 +267,13 @@ const pct = (n,d) => d? (100*n/d):0;
 const bytesH = b => { if(!b) return '—'; const u=['B','KB','MB','GB','TB','PB']; let i=0; b=+b; while(b>=1024&&i<u.length-1){b/=1024;i++} return b.toFixed(b<10&&i>0?1:0)+' '+u[i]; };
 const esc = s => String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-function barsHTML(items, {max, total, color='var(--s1)'}={}){
+function barsHTML(items, {max, total, color='var(--s1)', drill=false}={}){
   if(!items.length) return '<div class="empty">No data.</div>';
   const m = max || Math.max(1, ...items.map(d=>d[1]));
   return items.map(d=>{
     const w = Math.max(2, 100*d[1]/m);
     const p = total? `<span class="bpct">${pct(d[1],total).toFixed(pct(d[1],total)<1?2:0)}%</span>`:'';
-    return `<div class="brow" title="${esc(d[0])}: ${fmt(d[1])}">
+    return `<div class="brow${drill?' drill':''}" data-key="${esc(d[0])}" title="${esc(d[0])}: ${fmt(d[1])}${drill?' — click to drill in':''}">
       <div class="blabel">${esc(d[0])}</div>
       <div class="btrack"><div class="bfill" style="width:${w}%;background:${color}"></div></div>
       <div class="bval tnum">${fmt(d[1])}${p}</div></div>`;
@@ -222,12 +284,19 @@ function barsHTML(items, {max, total, color='var(--s1)'}={}){
 function barList(el, items, opts={}){ el.innerHTML = `<div class="bars">${barsHTML(items, opts)}</div>`; }
 
 // expandable bar list: top N, then "Show all" -> scrollable + filterable full list
-function expandable(mount, {metric, target, color, total, top=12, items=null}){
+function expandable(mount, {metric, target, color, total, top=12, items=null, drill=null}){
   const all = items || listFromCurrent(metric, target) || [];
   const topItems = all.slice(0, top);
   const canExpand = all.length>top || (LIVE && !items);
-  mount.innerHTML = `<div class="bars">${barsHTML(topItems,{total,color})}</div>` +
+  const dflag = !!drill;
+  mount.innerHTML = `<div class="bars">${barsHTML(topItems,{total,color,drill:dflag})}</div>` +
     (canExpand ? `<button class="more">Show all ▾</button>` : '');
+  // drill-in: delegate on the (persistent) mount, always using the latest handler
+  mount._drill = drill;
+  if(dflag && !mount._drillBound){ mount._drillBound = true;
+    mount.addEventListener('click', e=>{ const row=e.target.closest('.brow.drill');
+      if(row && mount._drill) mount._drill(row.dataset.key); });
+  }
   const btn = mount.querySelector('.more');
   if(!btn) return;
   let open=false, full=null;
@@ -239,14 +308,14 @@ function expandable(mount, {metric, target, color, total, top=12, items=null}){
     const wrap=document.createElement('div'); wrap.className='listwrap';
     const m = Math.max(1, ...full.map(d=>d[1]));
     wrap.innerHTML = `<input class="filter" placeholder="Filter ${full.length.toLocaleString()} entries…">
-      <div class="scroll"><div class="bars">${barsHTML(full,{max:m,total,color})}</div></div>`;
+      <div class="scroll"><div class="bars">${barsHTML(full,{max:m,total,color,drill:dflag})}</div></div>`;
     mount.querySelector('.bars').style.display='none';
     mount.insertBefore(wrap, btn);
     btn.textContent='Show less ▴';
     const inp=wrap.querySelector('.filter'), host=wrap.querySelector('.scroll .bars');
     inp.oninput=()=>{ const q=inp.value.trim().toLowerCase();
       const f = q? full.filter(d=>String(d[0]).toLowerCase().includes(q)) : full;
-      host.innerHTML = f.length? barsHTML(f,{max:m,total,color}) : '<div class="empty">No match.</div>'; };
+      host.innerHTML = f.length? barsHTML(f,{max:m,total,color,drill:dflag}) : '<div class="empty">No match.</div>'; };
     inp.focus();
   };
 }
@@ -255,7 +324,8 @@ function listFromCurrent(metric, target){
   const d=CURRENT; if(!d) return [];
   const r = target==='service'? d.regions_service : d.regions_email;
   return ({countries:r.countries, zones:r.zones, regions:r.regions,
-    services:d.top_services, domains:d.top_domains, passwords:d.top_password_basewords})[metric] || [];
+    services:d.top_services, domains:d.top_domains, passwords:d.top_password_basewords,
+    pwactual:d.top_passwords})[metric] || [];
 }
 
 async function getFull(metric, target){
@@ -290,6 +360,13 @@ function render(d){
   expandable($('#topDomains'), {metric:'domains', color:'var(--s1)'});
   expandable($('#topPw'), {metric:'passwords', color:'var(--s5)'});
 
+  // Password intelligence — populated at ingest; hidden on pre-upgrade data
+  const pil=$('#pwIntel'), hasPw=(d.top_passwords&&d.top_passwords.length)||(d.password_lengths&&d.password_lengths.length);
+  if(pil){ pil.style.display=hasPw?'':'none';
+    if(pil.previousElementSibling) pil.previousElementSibling.style.display=hasPw?'':'none';
+    if(hasPw){ expandable($('#topPwActual'), {metric:'pwactual', color:'var(--s2)'});
+      barList($('#pwLen'), (d.password_lengths||[]).map(x=>[x[0]+' chars', x[1]]), {}); } }
+
   const geo = window.__geo||'email';
   drawGeo(geo);
   document.querySelectorAll('#geoToggle button').forEach(b=>b.onclick=()=>{window.__geo=b.dataset.t; drawGeo(b.dataset.t);});
@@ -309,7 +386,7 @@ function drawGeo(target){
     : 'By email-domain zone — a proxy for victim geography.';
   expandable($('#geoRegions'), {metric:'regions', target});
   expandable($('#geoCountries'), {metric:'countries', target});
-  expandable($('#geoZones'), {metric:'zones', target});
+  expandable($('#geoZones'), {metric:'zones', target, drill: z=>openTldDetail(z, target)});
   document.querySelectorAll('#geoToggle button').forEach(b=>b.setAttribute('aria-pressed', b.dataset.t===target));
 }
 
@@ -416,7 +493,141 @@ async function openSourceDetail(sid){
       with_password:c.with_password, with_service:c.with_service, with_hash:0}
   } : {source_id:sid, name:'Source '+sid, parser_format:'?', totals:{}});
 }
-document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeModal(); });
+document.addEventListener('keydown', e=>{
+  if(e.key==='Escape') closeModal();
+  if(e.key==='/' && !/^(input|textarea|select)$/i.test((document.activeElement||{}).tagName||'')){
+    e.preventDefault(); $('#qText').focus();
+  }
+});
+
+// ---- record search ----------------------------------------------------------
+// a pivotable value: click to instantly re-search that field=value (investigation graph)
+function piv(v, pt){ return v ? `<span class="pivot" data-pt="${pt}" data-pv="${esc(v)}" title="Pivot — search ${pt}: ${esc(v)}">${esc(v)}</span>` : ''; }
+function recordsTableHTML(recs){
+  if(!recs || !recs.length) return '<div class="empty">No records.</div>';
+  const rows = recs.map(r=>{
+    const h=(r.h&&r.h.length)? r.h.join(' '):'';
+    const h0=(r.h||[])[0]||'';
+    const src=(r.s||[]).map(x=>`<span class="tag">${esc(x)}</span>`).join('');
+    return `<tr>
+      <td class="mono">${piv(r.e,'email')}</td>
+      <td class="mono">${piv(r.u,'username')}</td>
+      <td class="mono pw">${piv(r.p,'password')}</td>
+      <td class="hsh" title="${esc(h)}">${h0?`<span class="pivot" data-pt="hash" data-pv="${esc(h0)}">${esc(h)}</span>`:esc(h)}</td>
+      <td class="mono">${piv(r.t,'phone')}</td>
+      <td class="mono">${piv(r.v,'service')}</td>
+      <td title="${esc(r.m||'')}">${esc(r.m||'')}</td>
+      <td>${src}</td></tr>`;
+  }).join('');
+  return `<table class="recs"><thead><tr><th>Email</th><th>Username</th><th>Password</th>
+    <th>Hash</th><th>Phone</th><th>Service</th><th>Misc</th><th>Src</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+// ---- export + pivot ----------------------------------------------------------
+let LAST_RESULTS = [];
+function toCSV(recs){
+  const cols=['e','u','p','h','m','t','v','s'], head=['email','username','password','hash','misc','phone','service','sources'];
+  const q=v=>{ v=Array.isArray(v)?v.join('|'):(v==null?'':String(v)); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
+  return [head.join(',')].concat(recs.map(r=>cols.map(c=>q(r[c])).join(','))).join('\n');
+}
+function download(name, text, type){
+  try{ const b=new Blob([text],{type}); const u=URL.createObjectURL(b);
+    const a=document.createElement('a'); a.href=u; a.download=name; document.body.appendChild(a); a.click();
+    a.remove(); setTimeout(()=>URL.revokeObjectURL(u),1000); }catch(e){ alert('Export failed: '+e.message); }
+}
+document.addEventListener('click', e=>{
+  const el=e.target.closest('.pivot'); if(!el) return;
+  e.preventDefault(); closeModal();
+  $('#qType').value=el.dataset.pt; $('#qText').value=el.dataset.pv;
+  window.scrollTo({top:0, behavior:'smooth'});
+  runSearch();
+});
+
+function renderRecords(d){
+  const box=$('#results'); box.hidden=false;
+  if(d.error){ box.innerHTML=`<p class="hint err">${esc(d.error)}</p>`; return; }
+  LAST_RESULTS = d.results||[];
+  const n=d.count||0, capped = n>=d.limit;
+  const trunc = d.truncated? ` · <span class="warn">scan timed out; partial — narrow the query or build an index</span>`:'';
+  box.innerHTML = `<div class="rhead">`+
+    `<span class="hint" style="margin:0">${n.toLocaleString()} record${n!=1?'s':''} for <b>${esc(d.query)}</b> `+
+    `<span class="tag">${esc(d.type)}</span>${capped?` · capped at ${fmt(d.limit)}`:''}${trunc}</span>`+
+    `<span class="sp"></span>`+
+    (n? `<button class="xbtn2" id="expCsv">⤓ CSV</button><button class="xbtn2" id="expJson">⤓ JSON</button>`:'')+
+    `</div>`+ recordsTableHTML(d.results);
+  const c=$('#expCsv'), j=$('#expJson');
+  if(c) c.onclick=()=>download(`credshed_${d.type}_${Date.now()}.csv`, toCSV(LAST_RESULTS), 'text/csv');
+  if(j) j.onclick=()=>download(`credshed_${d.type}_${Date.now()}.json`, JSON.stringify(LAST_RESULTS,null,2), 'application/json');
+}
+
+async function runSearch(){
+  const q=$('#qText').value.trim(); if(!q) return;
+  const type=$('#qType').value, limit=$('#qLimit').value;
+  const box=$('#results'); box.hidden=false;
+  if(!LIVE){ box.innerHTML='<p class="hint warn">Record search needs the live backend (currently showing sample data).</p>'; return; }
+  box.innerHTML='<p class="hint">Searching…</p>';
+  try{
+    const r=await fetch(`api/search?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}&limit=${encodeURIComponent(limit)}`);
+    const d=await r.json(); renderRecords(d);
+  }catch(e){ box.innerHTML=`<p class="hint err">Search failed: ${esc(e.message)}</p>`; }
+}
+
+// ---- TLD drill-down modal ---------------------------------------------------
+async function openTldDetail(zone, target){
+  target = target||'email';
+  if(!LIVE){ renderTldModal({zone, target, offline:true}); return; }
+  renderTldModal({zone, target, loading:true});
+  try{
+    const r=await fetch(`api/tld/${encodeURIComponent(zone)}?target=${encodeURIComponent(target)}`);
+    const d=await r.json();
+    if(d.error){ renderTldModal({zone, target, error:d.error}); return; }
+    renderTldModal(d);
+  }catch(e){ renderTldModal({zone, target, error:e.message}); }
+}
+
+function renderTldModal(d){
+  closeModal();
+  const zone=d.zone, target=d.target||'email';
+  const back=document.createElement('div'); back.className='modal-backdrop';
+  back.innerHTML=`<div class="modal" role="dialog" aria-modal="true" aria-label="TLD detail">
+    <div class="modal-head"><div style="min-width:0">
+      <h2>.${esc(zone)} <span style="color:var(--muted);font-size:12.5px;font-weight:400">${target==='service'?'breached-platform zone':'victim email zone'}</span></h2>
+      <div class="meta" id="tldMeta"></div></div>
+      <button class="xbtn" id="mClose">✕ Close</button></div>
+    <div class="modal-body" id="tldBody"></div></div>`;
+  document.body.appendChild(back); document.body.style.overflow='hidden';
+  back.onclick=e=>{ if(e.target===back) closeModal(); };
+  back.querySelector('#mClose').onclick=closeModal;
+  const body=back.querySelector('#tldBody');
+  if(d.loading){ body.innerHTML='<p class="hint">Analysing zone…</p>'; return; }
+  if(d.offline){ body.innerHTML='<p class="hint warn">TLD drill-down needs the live backend (currently showing sample data).</p>'; return; }
+  if(d.error){ body.innerHTML=`<p class="hint err">${esc(d.error)}</p>`; return; }
+
+  const total=d.total_accounts;
+  back.querySelector('#tldMeta').innerHTML =
+    `<span>${total==null?'—':fmt(total)} accounts</span><span>·</span>`+
+    `<span>${fmt((d.top_domains||[]).length)} domains</span><span>·</span>`+
+    `<span>${fmt((d.sample||[]).length)} sample records</span>`;
+  const svcCard = target==='service' ? '' :
+    `<div class="card"><h3>Breached services</h3><p class="note">Platforms these accounts were seen on.</p><div id="tSvc"></div></div>`;
+  const domCard = target==='service' ? '' :
+    `<div class="card"><h3>Domains in .${esc(zone)}</h3><p class="note">Email domains under this zone.</p><div id="tDom"></div></div>`;
+  body.innerHTML = `
+    <section class="grid">
+      ${domCard}
+      <div class="card"><h3>Passwords</h3><p class="note">Most used by accounts in this zone (popular → rare).</p><div id="tPw"></div></div>
+      ${svcCard}
+      <div class="card"><h3>Usernames</h3><p class="note">Most common usernames.</p><div id="tUsr"></div></div>
+    </section>
+    <div class="ttl">Sample records</div>
+    <div class="resultbox">${recordsTableHTML(d.sample)}</div>`;
+  if(target!=='service'){
+    dList(back.querySelector('#tDom'), d.top_domains, 'var(--s1)');
+    dList(back.querySelector('#tSvc'), d.top_services, 'var(--s3)');
+  }
+  dList(back.querySelector('#tPw'), d.top_passwords, 'var(--s2)');
+  dList(back.querySelector('#tUsr'), d.top_usernames, 'var(--s4)');
+}
 
 function setStatus(live){ LIVE=live;
   $('#status').innerHTML = `<span class="dot ${live?'':'sample'}"></span><span id="statusText">${live?'live database':'sample data (backend offline)'}</span>`;
@@ -438,6 +649,7 @@ async function load(){
   const apply=m=>{document.documentElement.setAttribute('data-theme',m); try{localStorage.setItem('cs-theme',m)}catch(e){}};
   apply(mode); $('#theme').onclick=()=>{mode=mode==='auto'?'light':mode==='light'?'dark':'auto'; apply(mode);}; })();
 $('#refresh').onclick=load;
+$('#searchForm').addEventListener('submit', e=>{ e.preventDefault(); runSearch(); });
 load();
 </script>
 </body>

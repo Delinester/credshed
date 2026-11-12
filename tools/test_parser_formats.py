@@ -36,6 +36,17 @@ EXPECT = {  # filename -> expected detected format
     '20_scheme_crlf.txt': 'ulp',
     '21_pipe_pad.txt': 'generic',
     '22_url_port.txt': {'ulp', 'generic'},
+    # 10 more ULP variants (task 7)
+    '23_android_app.txt': 'ulp',
+    '24_url_querystring.txt': 'ulp',
+    '25_ulp_pipe.txt': {'ulp', 'generic'},
+    '26_ulp_semicolon.txt': {'ulp', 'generic'},
+    '27_ulp_ftp.txt': 'ulp',
+    '28_ulp_port_path.txt': 'ulp',
+    '29_ulp_space.txt': {'ulp', 'generic', 'mixed'},
+    '30_ulp_trailing_tag.txt': {'ulp', 'generic'},
+    '31_ulp_userinfo.txt': {'ulp', 'generic', 'mixed'},
+    '32_ulp_url_last.txt': {'generic', 'ulp', 'combo', 'mixed'},
 }
 
 

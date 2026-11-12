@@ -229,7 +229,10 @@ class CredShedCLI(CredShed):
                     unattended=options.unattended,
                     force=options.force_ingest,
                     stdout=options.stdout,
-                    force_ascii=False
+                    force_ascii=False,
+                    format_spec=getattr(options, 'format', None),
+                    format_delim=getattr(options, 'format_delim', None),
+                    workers=getattr(options, '_per_file_workers', 1),
                 )
 
         except KeyboardInterrupt:
@@ -262,6 +265,25 @@ class CredShedCLI(CredShed):
         filelist = list(set(core_util.recursive_file_list(self.options.ingest)))
         total_file_count = len(filelist)
         log.info(f'Importing a total of {len(filelist):,} files')
+
+        # DFIR enhancement: decide intra-file parallelism (per-file worker
+        # processes).  Explicit --workers wins; otherwise a SINGLE big file gets
+        # auto intra-file parallelism (that's the "ingest one file fast" case),
+        # while a multi-file run relies on file-level parallelism (--threads) and
+        # stays single-worker per file to avoid oversubscribing the cores.
+        ncpu = multiprocessing.cpu_count()
+        if getattr(self.options, 'workers', 0) and self.options.workers > 0:
+            self.options._per_file_workers = self.options.workers
+        elif total_file_count <= 1:
+            self.options._per_file_workers = max(1, min(ncpu, 32))
+        else:
+            self.options._per_file_workers = 1
+        if self.options._per_file_workers > 1:
+            log.info(f'Intra-file parallel ingest: {self.options._per_file_workers} '
+                     f'workers per file')
+            # a single parallel file shouldn't also be wrapped in a file-thread pool
+            if total_file_count <= 1:
+                self.options.threads = 1
 
         # alternate large and small files
         filelist = zip_filelist(filelist)
@@ -335,8 +357,37 @@ class CredShedCLI(CredShed):
 
 
 
+    def preview_files(self):
+        '''--preview: triage each -i file (format + stats + samples), no DB writes.'''
+        filelist = list(set(core_util.recursive_file_list(self.options.ingest)))
+        for f in filelist:
+            try:
+                p = super().preview_file(
+                    f, format_spec=getattr(self.options, 'format', None),
+                    format_delim=getattr(self.options, 'format_delim', None))
+            except Exception as e:
+                print(f'\n[!] {f}: {e.__class__.__name__}: {e}')
+                continue
+            lt = p['login_types']
+            print('=' * 72)
+            print(f"  {p['file']}")
+            print(f"  {core_util.bytes_to_human(p['size'])}  ·  format={p['format']}  ·  delimiter={p['delimiter']!r}")
+            print('=' * 72)
+            print(f"  sampled {p['scanned']:,} accounts  "
+                  f"(email {lt.get('email',0):,} · user {lt.get('username',0):,} · phone {lt.get('phone',0):,})")
+            print(f"  with password {p['with_password']:,} · hash {p['with_hash']:,} · service {p['with_service']:,}")
+            if p['top_domains']:
+                print('  top email domains : ' + ', '.join(f'{d} ({c})' for d, c in p['top_domains'][:6]))
+            if p['top_services']:
+                print('  top services      : ' + ', '.join(f'{s} ({c})' for s, c in p['top_services'][:6]))
+            print('  sample records:')
+            for a in p['samples'][:8]:
+                print('    ' + self.format_account(a))
+            print()
+
+
     def delete_leak(self):
-        
+
         try:
 
             if self.options.delete_leak:
@@ -407,7 +458,10 @@ def main(options):
                 sleep(5)
                 credshed.drop()
 
-            if options.ingest:
+            if options.ingest and getattr(options, 'preview', False):
+                credshed.preview_files()
+
+            elif options.ingest:
                 credshed.import_files()
 
             elif options.delete_leak is not None:
@@ -467,7 +521,11 @@ if __name__ == '__main__':
     parser.add_argument('-d', '--delete-leak',          nargs='*',                      help='delete leak(s) from database, e.g. "1-3,5,7-9"', metavar='SOURCE_ID')
     parser.add_argument('-dd', '--deduplication',       action='store_true',            help='deduplicate accounts ahead of time (lots of memory usage on large files)')
     parser.add_argument('--drop',                       action='store_true',            help='delete the entire database D:')
-    parser.add_argument('--threads',        type=int,   default=default_threads,        help='number of threads for import operations')
+    parser.add_argument('--threads',        type=int,   default=default_threads,        help='number of file-level threads for multi-file import operations')
+    parser.add_argument('--workers',        type=int,   default=0,                      help='intra-file parallel ingest: worker processes per file (0=auto: a single big file uses all cores, multi-file runs use 1). Delivers ~10x single-file ingest on multi-core hosts.')
+    parser.add_argument('--format',         type=str,   default=None,   metavar='SPEC', help='force a custom column layout instead of auto-detecting, e.g. "service:email:password" or "username,password" ("-"/"skip" drops a column)')
+    parser.add_argument('--format-delim',   type=str,   default=None,   metavar='CHAR', help='override the data delimiter used with --format (e.g. a tab); default is the separator used in the spec')
+    parser.add_argument('--preview',         action='store_true',            help='with -i: triage the file(s) — show detected format, stats and sample records WITHOUT importing anything')
     parser.add_argument('--print0',                     action='store_true',            help='delimit search results by null byte instead of colon')
     parser.add_argument('--limit',          type=int,   default=-1,                     help='limit number of results (default: unlimited)')
     parser.add_argument('-u', '--unattended',           action='store_true',            help='auto-detect import fields without user interaction')

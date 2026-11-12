@@ -85,12 +85,18 @@ class Source():
         self.password_basewords = BoundedCounter(500000)
         # top base words from misc/description field
         self.misc_basewords = BoundedCounter(500000)
+        # DFIR/threat-intel: plaintext-password frequency + a length histogram
+        # (how weak/strong the population's passwords are) — both cheap to tally.
+        # 250k cap keeps the stored top-1000 exact while bounding per-worker RAM.
+        self.passwords = BoundedCounter(250000)
+        self.password_lengths = {}   # length -> count
         # DFIR enhancement: per-source histograms for fast regional / service stats.
-        # TLD counters get a high cap so zone/region stats stay exact (TLDs are
-        # naturally bounded); host/baseword counters prune their long tail.
-        self.email_tlds = BoundedCounter(2000000)   # email-domain zone -> count (victim geography)
+        # Real TLD zones number only a few thousand, so a 500k cap keeps them exact
+        # while bounding the memory a flood of malformed "zones" from dirty hosts
+        # could otherwise consume; host/baseword counters prune their long tail.
+        self.email_tlds = BoundedCounter(500000)     # email-domain zone -> count (victim geography)
         self.services = BoundedCounter(500000)       # breached service host -> count
-        self.service_tlds = BoundedCounter(2000000)  # service zone -> count
+        self.service_tlds = BoundedCounter(500000)   # service zone -> count
         # login-type + phone tallies
         self.login_types = {'email': 0, 'username': 0, 'phone': 0}
         self.phone_count = 0
@@ -100,7 +106,7 @@ class Source():
 
 
 
-    def parse(self, unattended=True, force_ascii=True):
+    def parse(self, unattended=True, force_ascii=True, presniff=None):
 
         if unattended:
             self.description = f'Unattended import at {datetime.now().isoformat(timespec="milliseconds")}'
@@ -109,7 +115,10 @@ class Source():
 
         # DFIR enhancement: use the format-aware, dirty-data-tolerant SmartParse
         # (ULP / combo / CSV / SQL / JSON-lines) instead of the email-only absorber.
-        accounts = SmartParse(self.file, unattended=unattended, force_ascii=force_ascii)
+        # `presniff` (from build_presniff_from_spec) lets an investigator force a
+        # custom column layout instead of auto-detecting it.
+        accounts = SmartParse(self.file, unattended=unattended, force_ascii=force_ascii,
+                              presniff=presniff)
         self.parser = accounts
 
         if self.deduplicate:
@@ -157,12 +166,16 @@ class Source():
 
         if account.password:
             self.with_password += 1
-            for word in word_regex.findall(account.password):
-                self.password_basewords.bump(word.lower())
+            self.passwords.bump(account.password)
+            L = len(account.password)
+            if L <= 128:                       # cap bucket key; longer are outliers
+                self.password_lengths[L] = self.password_lengths.get(L, 0) + 1
+            for word in validation.basewords_lower(account.password):
+                self.password_basewords.bump(word)
 
         if account.misc:
-            for word in word_regex.findall(account.misc):
-                self.misc_basewords.bump(word.lower())
+            for word in validation.basewords_lower(account.misc):
+                self.misc_basewords.bump(word)
 
 
     def top_domains(self, limit=10):
@@ -175,6 +188,11 @@ class Source():
 
         sorted_words = dict(sorted(self.password_basewords.items(), key=lambda x: x[1], reverse=True)[:limit])
         return {w: c for w,c in sorted_words.items()}
+
+
+    def top_passwords(self, limit=1000):
+
+        return {p: c for p, c in sorted(self.passwords.items(), key=lambda x: x[1], reverse=True)[:limit]}
 
 
     def top_misc_basewords(self, limit=10):

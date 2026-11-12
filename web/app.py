@@ -73,6 +73,8 @@ def compact(d, n=15):
         'sources': d['sources'],
         'top_domains': d['top_domains'][:n], 'top_services': d['top_services'][:n],
         'top_password_basewords': d['top_password_basewords'][:n],
+        'top_passwords': d.get('top_passwords', [])[:n],
+        'password_lengths': d.get('password_lengths', []),
         'regions_email': reg(d['regions_email']), 'regions_service': reg(d['regions_service']),
     }
 
@@ -100,6 +102,7 @@ def api_list(metric: str, target: str = 'email'):
             'services': d['top_services'],
             'domains': d['top_domains'],
             'passwords': d['top_password_basewords'],
+            'pwactual': d.get('top_passwords', []),
         }.get(metric)
         if items is None:
             return JSONResponse({'error': f'unknown metric {metric!r}'}, status_code=400)
@@ -117,12 +120,50 @@ def api_source(source_id: int):
         if hit and (now - hit[0]) < CACHE_TTL:
             return JSONResponse(hit[1])
         data = credshed().db.source_detail(source_id, top_n=FULL_TOP, zones_top=FULL_ZONES)
+        if len(_src_cache) >= 256:          # bound the cache (evict the oldest entry)
+            _src_cache.pop(min(_src_cache, key=lambda k: _src_cache[k][0]), None)
         _src_cache[source_id] = (now, data)
         return JSONResponse(data)
     except CredShedError as e:
         return JSONResponse({'error': str(e)}, status_code=404)
     except Exception as e:  # pragma: no cover
         return JSONResponse({'error': f'{type(e).__name__}: {e}'}, status_code=500)
+
+
+@app.get('/api/search')
+def api_search(q: str, type: str = 'auto', limit: int = 100):
+    '''
+    DFIR data search: return actual account records matching a query.  Supported
+    types: email, domain, tld/zone, username, password, hash, phone, service
+    (auto-detected when type=auto).  Read-only; uses the per-field indexes.
+
+    This endpoint intentionally returns credential records (not just stats): the
+    dashboard is for authorised investigators on an internal, access-controlled
+    network, where seeing the underlying data is the point.
+    '''
+    limit = max(1, min(int(limit), 1000))
+    try:
+        data = credshed().db.search_records(q, query_type=type, limit=limit)
+        data['limit'] = limit
+        return JSONResponse(data)
+    except CredShedError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
+    except Exception as e:  # pragma: no cover
+        return JSONResponse({'error': f'{e.__class__.__name__}: {e}'}, status_code=500)
+
+
+@app.get('/api/tld/{zone}')
+def api_tld(zone: str, target: str = 'email', top: int = 200, sample: int = 30):
+    '''Drill-down statistics + sample records for one domain zone (e.g. ".kz").'''
+    top = max(1, min(int(top), 2000))
+    sample = max(0, min(int(sample), 200))
+    tgt = 'service' if target == 'service' else 'email'
+    try:
+        return JSONResponse(credshed().db.tld_detail(zone, target=tgt, top_n=top, sample=sample))
+    except CredShedError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
+    except Exception as e:  # pragma: no cover
+        return JSONResponse({'error': f'{e.__class__.__name__}: {e}'}, status_code=500)
 
 
 @app.get('/api/health')

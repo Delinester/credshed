@@ -262,6 +262,83 @@ class File(type(pathlib.Path())):
             return 0
 
 
+    def _decode_encoding(self):
+        '''the text codec used for this file (mirrors _read_file's choice)'''
+        enc = self.encoding
+        if (enc or '').lower().replace('-', '') in ('utf8', 'usascii', 'ascii'):
+            enc = 'utf-8-sig'
+        return enc
+
+
+    def iter_lines_range(self, start, end, progress=None, slot=None, every=4000):
+        '''
+        DFIR enhancement (parallel ingest): yield decoded, stripped lines whose
+        *start* falls in the byte range [start, end).
+
+        Newline-aligned so adjacent ranges tile the file with no overlap and no
+        gap: a worker keeps the line beginning at `start` only when the preceding
+        byte is a newline (otherwise that partial line belongs to the previous
+        range and is skipped), and always finishes the line that straddles `end`.
+
+        Matches _read_file exactly so a parallel parse sees byte-identical lines:
+          * readline is capped at 1 MiB, so a pathological no-/sparse-newline file
+            (the "250 GB single line" threat model) streams in bounded pieces
+            instead of materialising gigabytes in one worker (OOM) — and a >1 MiB
+            line is emitted as the same <=1 MiB pieces the serial reader produces;
+          * a byte-order mark is stripped only at the very start of the file (as a
+            whole-stream utf-8-sig decode would), never from a mid-file line.
+        The partial-line skip at `start` is likewise piece-bounded so it can't
+        buffer a huge straddling line while discarding it.
+
+        Caller (can_parallelize) guarantees a utf-8/ascii, uncompressed, non-SQL
+        file here; utf-16/32 and SQL dumps take the serial path, which decodes via
+        a text codec / applies stateful SQL-splitting that byte ranges cannot.
+        '''
+        MAXL = 1 << 20  # 1 MiB, mirrors _read_file's cap
+        enc = self.encoding
+        # decode with plain utf-8 (NOT utf-8-sig): a sig codec would strip a BOM on
+        # every piece; we strip it once, only at file start, to match the serial path
+        dec = 'utf-8' if (enc or '').lower().replace('-', '') in ('utf8', 'usascii', 'ascii') else enc
+        strip_bom = (start == 0)
+        i = 0
+
+        def publish(pos):
+            if progress is not None and slot is not None:
+                try:
+                    progress[slot] = min(int(pos), end)
+                except (IndexError, ValueError, TypeError):
+                    pass
+
+        with open(self, 'rb') as f:
+            if start > 0:
+                f.seek(start - 1)
+                if f.read(1) != b'\n':
+                    # discard the partial line we begin inside, in bounded pieces
+                    while True:
+                        c = f.readline(MAXL)
+                        if not c or c.endswith(b'\n'):
+                            break
+            while f.tell() < end:
+                # one logical line, emitted in <=MAXL pieces exactly like _read_file
+                while True:
+                    raw = f.readline(MAXL)
+                    if not raw:
+                        publish(end)
+                        return
+                    i += 1
+                    if i % every == 0:
+                        publish(f.tell())
+                    s = raw.decode(dec, errors='backslashreplace')
+                    if strip_bom:
+                        strip_bom = False
+                        if s[:1] == '﻿':
+                            s = s[1:]
+                    yield s.strip('\r\n\t')
+                    if raw.endswith(b'\n'):
+                        break
+        publish(end)
+
+
 
     def __iter__(self):
 

@@ -86,6 +86,86 @@ def _is_sql_noise(line):
     return s.startswith(_SQL_NOISE)
 
 
+# canonical fields a custom format spec may assign to a column
+_SPEC_FIELDS = {'email', 'username', 'password', 'hash', 'phone', 'service', 'misc'}
+# tokens that mean "ignore this column"
+_SPEC_SKIP = {'', '-', '_', 'x', 'skip', 'ignore', 'null', 'none', 'na'}
+
+
+def build_presniff_from_spec(spec, delimiter=None):
+    '''
+    DFIR scalability feature: let an investigator declare a file's layout instead
+    of relying on auto-detection, for odd/ambiguous dumps.
+
+    `spec` lists the columns in order, e.g.:
+        "service:email:password"      URL:login:password (routed to the ULP parser)
+        "username,password"           CSV user/pass
+        "email|hash|-|phone"          '-' (or skip/ignore) drops a column
+    Field names accept the same synonyms as CSV headers (url/host->service,
+    user/login->username, pass->password, tel->phone, md5/sha1->hash, ...).
+    The delimiter defaults to the spec's own separator but can be overridden
+    (e.g. a tab) via `delimiter`.
+
+    A classic 3-field "service:<identity>:password" colon spec is handled by the
+    real scheme/port-aware ULP parser (so "https://host:443:user:pass" parses
+    correctly); any other layout uses the positional generic parser (which peels a
+    leading URL scheme but is not :port-aware — for messy scheme+port URL:login:
+    password data, just let auto-detect pick 'ulp').
+
+    Returns a presniff dict consumable by SmartParse(..., presniff=...).
+    '''
+    if not spec or not str(spec).strip():
+        raise ValueError('empty format spec')
+    spec = str(spec).strip()
+
+    # The spec's OWN separator is always inferred from the spec text (first
+    # non-identifier char).  `delimiter`, when given, overrides only the DATA
+    # delimiter, so e.g. a comma-written spec can target tab-delimited data.
+    spec_sep = None
+    for ch in spec:
+        if not (ch.isalnum() or ch == '_'):
+            spec_sep = ch
+            break
+    if spec_sep is None:
+        spec_sep = ':'          # single-field spec, no separator present
+    tokens = [t.strip().lower() for t in spec.split(spec_sep)]
+
+    column_map = {}
+    for i, tok in enumerate(tokens):
+        if tok in _SPEC_SKIP:
+            continue
+        canon = _HEADER_LOOKUP.get(tok, tok)
+        if canon not in _SPEC_FIELDS:
+            raise ValueError(f'unknown field {tok!r} in format spec (col {i}); '
+                             f'use one of {sorted(_SPEC_FIELDS)} or a skip token')
+        column_map[i] = canon
+
+    if not column_map:
+        raise ValueError('format spec assigns no usable columns')
+    # a credential needs at least one identity or secret to be meaningful
+    if not ({'email', 'username', 'phone'} & set(column_map.values())) and \
+       not ({'password', 'hash'} & set(column_map.values())):
+        raise ValueError('format spec needs at least an identity (email/username/'
+                         'phone) or a secret (password/hash)')
+
+    data_delim = delimiter if delimiter is not None else spec_sep
+
+    # the classic URL:login:password shape is best handled by the real ULP parser
+    # (scheme peeling + :port folding + login-type anchoring), which the naive
+    # generic column splitter cannot do; detect it and route there.
+    is_ulp_shape = (data_delim == ':' and len(tokens) == 3 and
+                    column_map.get(0) == 'service' and column_map.get(2) == 'password'
+                    and column_map.get(1) in ('email', 'username', 'phone'))
+
+    return {
+        'format': 'ulp' if is_ulp_shape else 'generic',
+        'delimiter': data_delim,
+        'num_fields': len(tokens),
+        'header': None,
+        'column_map': column_map,
+    }
+
+
 def _mode(values, default=0):
     try:
         return statistics.mode(values)
@@ -105,7 +185,13 @@ class SmartParse:
         .stats    - dict of counters filled in during iteration
     '''
 
-    def __init__(self, file, unattended=True, force_ascii=False, sample_lines=2000):
+    # formats whose rows are self-contained (one line == independent record), so
+    # the file can be split into byte ranges and parsed by workers in parallel.
+    # 'blocks' is excluded (multi-line stateful records); 'empty' has no rows.
+    PARALLEL_SAFE_FORMATS = ('ulp', 'combo', 'mixed', 'csv', 'generic', 'jsonl')
+
+    def __init__(self, file, unattended=True, force_ascii=False, sample_lines=2000,
+                 presniff=None, line_source=None):
 
         # coerce to a File (which knows how to decode + SQL-split while iterating)
         if isinstance(file, File):
@@ -123,6 +209,10 @@ class SmartParse:
         self.header = None
         self.column_map = {}   # index -> canonical field name (csv / generic)
 
+        # DFIR enhancement (parallel ingest): when a worker parses one byte range
+        # of a file, iterate this injected line source instead of the whole file.
+        self._line_source = line_source
+
         # runtime counters
         self.stats = {
             'lines_total': 0,
@@ -135,7 +225,30 @@ class SmartParse:
             'login_phone': 0,
         }
 
-        self._sniff()
+        if presniff is not None:
+            # reuse a format detected once by the parent (all workers parse
+            # identically, and nobody re-samples the file).
+            self.format = presniff.get('format', 'generic')
+            self.delimiter = presniff.get('delimiter', ':')
+            self.num_fields = presniff.get('num_fields', 2)
+            self.header = presniff.get('header')
+            self.column_map = {int(k): v for k, v in (presniff.get('column_map') or {}).items()}
+        else:
+            self._sniff()
+
+    def sniff_params(self):
+        '''the detected parameters, as a picklable dict to hand to parallel workers'''
+        return {
+            'format': self.format,
+            'delimiter': self.delimiter,
+            'num_fields': self.num_fields,
+            'header': self.header,
+            'column_map': dict(self.column_map),
+        }
+
+    def _lines(self):
+        '''whole file (normal) or the injected byte-range iterator (parallel worker)'''
+        return self.file if self._line_source is None else self._line_source
 
 
     # ------------------------------------------------------------------ sniff
@@ -152,6 +265,15 @@ class SmartParse:
 
     def _split(self, line, delimiter=None, maxsplit=-1):
         d = self.delimiter if delimiter is None else delimiter
+        # Scheme-safe ':' split: a URL scheme ("https://") anywhere in a
+        # colon-delimited line must not be torn apart on the ':' of "://".
+        # Shield it with a sentinel for the split, then restore — so sniffing,
+        # column detection AND parsing all see the URL as one field (fixes
+        # url-first, url-middle and url-last layouts alike).
+        if d == ':' and '://' in line:
+            prot = line.replace('://', '\x01')
+            parts = prot.split(':') if maxsplit < 0 else prot.split(':', maxsplit)
+            return [p.replace('\x01', '://') for p in parts]
         if maxsplit < 0:
             return line.split(d)
         return line.split(d, maxsplit)
@@ -258,7 +380,7 @@ class SmartParse:
         url0 = email0 = 0
         for l in sample:
             scheme, rest = self._peel_scheme(l)
-            parts = rest.split(self.delimiter)
+            parts = self._split(rest)          # scheme-safe: a url in any column counts as one field
             counts.append(len(parts))
             first = parts[0].strip(_STRIP)
             if scheme or validation.is_url_like(first):
@@ -419,6 +541,7 @@ class SmartParse:
         if not self.column_map:
             yield from self._parse_delimited(line)
             return
+        # _split is scheme-safe for ':', so a URL in any column stays intact.
         parts = self._split(line)
         fields = {'email': '', 'username': '', 'password': '', 'phone': '', 'service': '', 'misc': ''}
         hashes = []
@@ -535,7 +658,7 @@ class SmartParse:
         field starts while the current record already has a secret.
         '''
         cur = {}
-        for line in self.file:
+        for line in self._lines():
             self.stats['lines_total'] += 1
             s = line.strip()
             if not s or _BLOCK_SEP.match(s):
@@ -621,7 +744,7 @@ class SmartParse:
         # skip the per-line check for the big uniform formats (ulp/csv/jsonl)
         sql_possible = self.format in ('generic', 'combo', 'mixed')
 
-        for line in self.file:
+        for line in self._lines():
             self.stats['lines_total'] += 1
             if not line.strip():
                 self.stats['lines_blank'] += 1

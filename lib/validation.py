@@ -30,6 +30,22 @@ phone_strip_regex = re.compile(r'[^\d+]')
 control_chars_re = re.compile(r'[\x00-\x1f\x7f]')
 # for finding base words in password
 word_regex = re.compile(r'[a-z]{1}[a-z13450@$]{1,18}[a-z]{1}', re.I)
+
+# bounded memo for baseword extraction: passwords repeat heavily in breach data
+# ("123456", "password", ...), so caching the (lowercased) base-word tuple turns
+# most password/misc tallies into a dict hit instead of a regex scan + lower().
+_baseword_cache = {}
+_BASEWORD_CACHE_CAP = 100000   # common passwords dominate the hit rate; cap to bound RAM
+
+def basewords_lower(s):
+    '''lowercased base words of a string, memoized. Pure -> identical output.'''
+    cached = _baseword_cache.get(s)
+    if cached is not None:
+        return cached
+    result = tuple(w.lower() for w in word_regex.findall(s))
+    if len(_baseword_cache) < _BASEWORD_CACHE_CAP:
+        _baseword_cache[s] = result
+    return result
 # for checking for hashed passwords
 # matches 227/240 (95%) of hashcat's example passwords
 
@@ -58,6 +74,8 @@ def clean_utf(s, allow_whitespace=True):
     '''
     Remove all non-printable characters and all whitespace except for spaces
     '''
+    if not s:                      # fast path: empty field (very common) -> no regex
+        return s
     if allow_whitespace:
         return utf_chars_re.sub('', sep_chars_re.sub(' ', s))
     else:
@@ -102,6 +120,11 @@ def is_fuzzy_email(email):
 
 def is_hash(s):
 
+    # fast reject: the shortest possible match across all hash patterns is 21
+    # chars (base64 run of 20 + '='), so anything shorter cannot be a hash and
+    # we skip four regex probes.  Output-identical to the loop below.
+    if len(s) < 21:
+        return False
     # go in reverse
     for i in range(len(hash_regexes)-1, -1, -1):
         if hash_regexes_str[i].match(s):
@@ -175,6 +198,10 @@ def is_url_like(s):
         return False
     if url_scheme_regex.match(s):
         return True
+    # a hostname needs a dot; extract_host only ever removes characters, so a
+    # dotless string can never yield a dotted host -> skip the costly extract.
+    if '.' not in s:
+        return False
     host = extract_host(s)
     # a dotted host with a plausible label, or an android-style package (a.b.c)
     return bool(host) and ('.' in host) and not host.replace('.', '').isdigit()
@@ -205,21 +232,35 @@ def extract_host(s):
     return s.strip('.')
 
 
+# small bounded memo: during ingest tld_of() is called once per account on the
+# email domain and the service host, both of which are extremely repetitive
+# (gmail.com, google.com, ...), so caching turns most calls into a dict hit.
+# Pure function => the cache can never change a result.
+_tld_cache = {}
+_TLD_CACHE_CAP = 100000   # hot domains/hosts repeat heavily; a small cache covers most hits
+
 def tld_of(host):
     '''
     Return the top-level label (zone) of a hostname, lowercased, or '' if none.
     Understands a short list of multi-part public suffixes (e.g. co.uk).
     '''
+    cached = _tld_cache.get(host)
+    if cached is not None:
+        return cached
+    raw = host
     host = (host or '').strip().lower().strip('.')
     if not host or '.' not in host:
-        return ''
-    labels = host.split('.')
-    # common two-label public suffixes worth grouping by
-    if len(labels) >= 3:
-        two = '.'.join(labels[-2:])
-        if two in multi_part_suffixes:
-            return two
-    return labels[-1]
+        result = ''
+    else:
+        labels = host.split('.')
+        # common two-label public suffixes worth grouping by
+        if len(labels) >= 3 and '.'.join(labels[-2:]) in multi_part_suffixes:
+            result = '.'.join(labels[-2:])
+        else:
+            result = labels[-1]
+    if raw is not None and len(_tld_cache) < _TLD_CACHE_CAP:
+        _tld_cache[raw] = result
+    return result
 
 
 # selected multi-part public suffixes so e.g. foo.co.uk groups under "co.uk"
