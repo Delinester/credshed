@@ -326,6 +326,12 @@ def can_parallelize(file, presniff):
     try:
         with open(str(file), 'rb') as fh:
             head = fh.read(262144)
+        # CR-only (classic-Mac) line endings: the parallel binary readline splits
+        # only on \n, so a \r-terminated file looks like one giant line and the
+        # byte-range workers drop ~100% of records.  The serial text reader uses
+        # universal newlines and handles it correctly, so force the serial path.
+        if b'\r' in head and b'\n' not in head:
+            return False, 'CR-only line endings need the serial text codec'
         if b'insert into' in head.lower():
             return False, 'SQL INSERT dump (needs stateful row splitting)'
     except OSError:

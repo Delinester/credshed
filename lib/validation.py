@@ -12,15 +12,17 @@ from binascii import Error as Base64Error
 # non-ASCII code points (Cyrillic, CJK, accented latin, …) allowed in internationalized
 # (IDN) emails / usernames / domains so they are not dropped or mangled
 _NON_ASCII = r'À-\U0010ffff'
-# for checking if string is an email (IDN-aware: accepts non-ASCII local parts, domains and TLDs)
-email_regex = re.compile(rf'^([A-Z0-9{_NON_ASCII}][A-Z0-9_\-\.\+{_NON_ASCII}]{{,100}})@([A-Z0-9{_NON_ASCII}][A-Z0-9_\-\.{_NON_ASCII}]{{,100}})\.([A-Z{_NON_ASCII}]{{2,8}})$', re.I)
+# TLD label: 2-24 chars, non-ASCII (IDN) OR digits/hyphen (punycode xn--80a1acny / xn--p1ai)
+_TLD = rf'[A-Z0-9{_NON_ASCII}][A-Z0-9\-{_NON_ASCII}]{{1,23}}'
+# for checking if string is an email (IDN-aware: non-ASCII local parts/domains/TLDs AND punycode)
+email_regex = re.compile(rf'^([A-Z0-9{_NON_ASCII}][A-Z0-9_\-\.\+{_NON_ASCII}]{{,100}})@([A-Z0-9{_NON_ASCII}][A-Z0-9_\-\.{_NON_ASCII}]{{,100}})\.({_TLD})$', re.I)
 # for searching for email in string (IDN-aware, mirrors email_regex so the parser's
-# salvage/extraction path finds Cyrillic/CJK emails embedded in dirty lines too)
-email_regex_search = re.compile(rf'[A-Z0-9{_NON_ASCII}][A-Z0-9_\-\.\+{_NON_ASCII}]{{,100}}@[A-Z0-9{_NON_ASCII}][A-Z0-9_\-\.{_NON_ASCII}]{{,100}}\.[A-Z{_NON_ASCII}]{{2,8}}', re.I)
+# salvage/extraction path finds Cyrillic/CJK/punycode emails embedded in dirty lines too)
+email_regex_search = re.compile(rf'[A-Z0-9{_NON_ASCII}][A-Z0-9_\-\.\+{_NON_ASCII}]{{,100}}@[A-Z0-9{_NON_ASCII}][A-Z0-9_\-\.{_NON_ASCII}]{{,100}}\.{_TLD}', re.I)
 # less-strict version
 fuzzy_email_regex = re.compile(r'^(.+)@(.+)\.(.+)')
-# domain
-domain_regex = re.compile(r'^([A-Z0-9_\-\.]*)\.([A-Z]{2,24})$', re.I)
+# domain (IDN-aware: so a bare Cyrillic/CJK domain auto-detects like an ASCII one)
+domain_regex = re.compile(rf'^([A-Z0-9_\-\.{_NON_ASCII}]*)\.({_TLD})$', re.I)
 # a bare TLD / domain-zone query, e.g. ".ru", "ru", ".co.uk", ".рф", ".中国"
 tld_query_regex = re.compile(rf'^\.?([a-z0-9{_NON_ASCII}]{{2,24}}(?:\.[a-z0-9{_NON_ASCII}]{{2,24}})?)$', re.I)
 # host / url-ish first field of a ULP (URL:login:password) line
@@ -71,28 +73,39 @@ hash_regexes_str   = [re.compile(r, re.I) for r in hash_regexes]
 # corrupted by deleting its capitals.  Non-ASCII letters are kept for IDN addresses.
 email_chars_re = re.compile(rf'[^a-z0-9.@_\-\+{_NON_ASCII}]')
 
-all_chars = (chr(i) for i in range(sys.maxunicode))
-categories = {'L', 'M', 'N', 'P', 'S'}
-good_chars = ''.join(c for c in all_chars if unicodedata.category(c) in categories)
-utf_chars_re = re.compile(f'^[ {re.escape(good_chars)}]')
+# control chars (NUL, C0, C1, DEL) to strip from text fields, EXCEPT tab/newline/CR
+# which the whitespace collapse below turns into a single space.  (The old category
+# whitelist build was a silent no-op — unicodedata.category() returns 2-letter codes,
+# not the 1-letter keys it tested — so NUL/control bytes survived into stored fields
+# and could even collide two distinct records onto one _id.)  A translate table is a
+# C-level char drop, much faster than a regex sub on every field during a bulk ingest.
+_CONTROL_STRIP = {c: None for c in
+                  list(range(0, 9)) + [11, 12] + list(range(14, 32)) + list(range(127, 160))}
 sep_chars_re = re.compile(r'\s+')
 def clean_utf(s, allow_whitespace=True):
     '''
-    Remove all non-printable characters and all whitespace except for spaces
+    Normalise to Unicode NFC, strip control / non-printable characters, and collapse
+    runs of whitespace to one space (or remove it).  Keeps letters, marks, numbers,
+    punctuation and symbols in every script (Cyrillic / CJK / emoji included).
+    NFC means the same accented/IDN value stored in two forms lands on one _id.
     '''
-    if not s:                      # fast path: empty field (very common) -> no regex
+    if not s:                      # fast path: empty field (very common) -> no work
         return s
-    if allow_whitespace:
-        return utf_chars_re.sub('', sep_chars_re.sub(' ', s))
-    else:
-        return utf_chars_re.sub('', sep_chars_re.sub('', s))
+    if not s.isascii():            # ASCII is already NFC; skip the costly normalisation
+        s = unicodedata.normalize('NFC', s)
+    s = s.translate(_CONTROL_STRIP)
+    return sep_chars_re.sub(' ' if allow_whitespace else '', s)
 
 
 def clean_email(s):
 
-    # lowercase first so capitals are normalised (bob == Bob), not deleted; then drop
-    # characters that can't appear in an email while preserving non-ASCII (IDN) letters
-    return email_chars_re.sub('', s.lower())
+    # lowercase first so capitals are normalised (bob == Bob), not deleted; NFC so the
+    # same IDN address in two Unicode forms lands on one _id; then drop characters that
+    # can't appear in an email while preserving non-ASCII (IDN) letters
+    s = s.lower()
+    if not s.isascii():
+        s = unicodedata.normalize('NFC', s)
+    return email_chars_re.sub('', s)
 
 
 def is_domain(domain):
@@ -238,9 +251,10 @@ def extract_host(s):
     raw = s
     s = control_chars_re.sub('', s.strip().lower())
     s = url_scheme_regex.sub('', s)
-    # userinfo@host -> host (rare in service fields, but be safe)
+    # userinfo@host -> host (rsplit so a multi-'@' value leaves no '@', i.e. extract_host
+    # is idempotent and a re-ingest regenerates the same _id)
     if '@' in s:
-        s = s.split('@', 1)[-1]
+        s = s.rsplit('@', 1)[-1]
     # cut at first path/query/fragment/space/backslash
     s = host_split_regex.split(s, 1)[0]
     # strip port
@@ -320,10 +334,16 @@ def validate_query_type(query, query_type='auto'):
         'url': 'service', 'site': 'service', 'host': 'service', 'domain_service': 'service',
         'mail': 'email', 'e': 'email', 'd': 'domain',
         'md5': 'hash', 'sha1': 'hash', 'sha256': 'hash', 'bcrypt': 'hash', 'ntlm': 'hash', 'h': 'hash',
+        'name': 'misc', 'fullname': 'misc', 'notes': 'misc', 'context': 'misc', 'm': 'misc',
     }
     query_type = aliases.get(query_type, query_type)
 
-    explicit_types = {'email', 'domain', 'username', 'password', 'phone', 'service', 'tld', 'hash'}
+    explicit_types = {'email', 'domain', 'username', 'password', 'phone', 'service', 'tld', 'hash', 'misc'}
+
+    # reject an explicitly-requested type we don't recognise, rather than silently
+    # falling through to auto-detect (which would mask a caller's typo'd ?type=)
+    if query_type != 'auto' and query_type not in explicit_types:
+        raise CredShedValidationError(f'Unknown search type {query_type!r}')
 
     # honor a valid explicit choice (these fields can hold almost anything,
     # so trust the operator rather than re-detecting)

@@ -79,7 +79,7 @@ class DB():
 
 
 
-    def search(self, keyword, query_type='email', limit=10000, max_time_ms=None):
+    def search(self, keyword, query_type='email', limit=10000, max_time_ms=None, mode='exact'):
         '''
         searches by keyword using regex
         ~ 2 minutes to regex-search non-indexed 100M-entry DB
@@ -90,7 +90,7 @@ class DB():
         leaves it None (unbounded) for deliberate long scans.
         '''
 
-        query = self._build_query(keyword, query_type)
+        query = self._build_query(keyword, query_type, mode=mode)
 
         for result in self._op(
                 self.accounts.find,
@@ -221,14 +221,19 @@ class DB():
         return '\n'.join(lines)
 
 
-    def _build_query(self, keyword, query_type='email'):
-
+    def _build_query(self, keyword, query_type='email', mode='exact'):
+        # mode='contains' turns the free-text field types (username/password/misc) into a
+        # case-insensitive substring match — the "wildcard/partial" search.  The other
+        # types keep their own semantics (email/domain prefixes, service subdomains, …).
 
         query_type = validation.validate_query_type(keyword, query_type)
+        contains = (mode == 'contains')
 
         if query_type == 'email':
             try:
-                email, domain = keyword.lower().split('@')[:2]
+                # normalise the term exactly as ingest does (lowercase, NFC, strip
+                # invalid chars) so a search matches the stored, cleaned email
+                email, domain = validation.clean_email(keyword).split('@')[:2]
                 email, domain = Account.handle_special_email_cases(email, domain)
                 # _id begins with reversed domain
                 domain_chunk = re.escape(domain[::-1])
@@ -261,20 +266,37 @@ class DB():
             # domain-zone search on the EMAIL domain (victim geography), e.g. ".ru"
             # _id starts with the reversed email domain, so the zone is a reversed prefix
             zone = keyword.strip().lower().lstrip('.')
+            if not zone:
+                raise CredShedError('Invalid TLD zone (empty)')
             rev = re.escape(zone[::-1])
             query = {'_id': {'$regex': rf'^{rev}\.'}}
 
         elif query_type == 'username':
-            # exact match (index-friendly).  A purely numeric login may have been
-            # routed to the phone field, so match either for numeric pivots.
-            if keyword.isdigit():
-                query = {'$or': [{'u': keyword}, {'t': keyword}]}
+            # normalise the term exactly as ingest does so it matches the stored value
+            # (clean_utf strips control chars / NFC; then strip + the username translate
+            # table + the length cap).  A purely numeric login may have been routed to
+            # the phone field, so match either for numeric pivots.
+            kw = validation.clean_utf(keyword).strip().translate(Account.strip_from_username)[:Account.max_length_1]
+            if contains:
+                query = {'u': {'$regex': re.escape(kw), '$options': 'i'}}
+            elif kw.isdigit():
+                query = {'$or': [{'u': kw}, {'t': kw}]}
             else:
-                query = {'u': keyword}
+                query = {'u': kw}
 
         elif query_type == 'password':
-            # reverse search: "who used this password?"
-            query = {'p': keyword}
+            # reverse search: "who used this password?" — normalise like ingest
+            kw = validation.clean_utf(keyword)[:Account.max_length_1]
+            query = {'p': {'$regex': re.escape(kw), '$options': 'i'}} if contains else {'p': kw}
+
+        elif query_type == 'misc':
+            # search the misc / context field (victim names, notes, IPs) — the only
+            # place Cyrillic/CJK display names live.  Contains-match, case-insensitive;
+            # idx_m (sparse) bounds the scan to the docs that actually carry a misc value.
+            kw = validation.clean_utf(keyword).strip()
+            if not kw:
+                raise CredShedError('Empty misc/name search term')
+            query = {'m': {'$regex': re.escape(kw[:Account.max_length_2]), '$options': 'i'}}
 
         elif query_type == 'hash':
             # reverse search by hash value (e.g. look a hash up against potfile data)
@@ -291,13 +313,18 @@ class DB():
             kw = keyword.strip().lower()
             if kw.startswith('.'):
                 # service-zone query, e.g. "-q service .ru"
-                rev = re.escape(kw.lstrip('.')[::-1])
+                z = kw.lstrip('.')
+                if not z:
+                    raise CredShedError('Invalid service zone (empty)')
+                rev = re.escape(z[::-1])
                 query = {'v': {'$regex': rf'^{rev}\.'}}
             else:
                 # service host: the host itself OR any of its subdomains.
                 # Split into an exact match + an anchored "host." prefix regex so
                 # BOTH arms get index bounds (a single ^...(?:\.|$) regex does not).
                 host = validation.extract_host(kw)
+                if not host:
+                    raise CredShedError(f'Invalid service host: "{keyword}"')
                 rev = host[::-1]
                 query = {'$or': [
                     {'v': rev},
@@ -315,6 +342,8 @@ class DB():
     # (fast writes), then build only the dimensions a given engagement needs.
     SECONDARY_INDEX_FIELDS = {
         'u': 'username', 'p': 'password', 't': 'phone', 'v': 'service', 'h': 'hash',
+        'm': 'misc',   # victim names / context; sparse, so a name search scans only
+                       # the (relatively few) docs that actually carry a misc value
     }
 
     def build_indexes(self, fields=None):
@@ -392,9 +421,16 @@ class DB():
         purely from the per-source histograms in the `sources` collection.
         Powers the statistics dashboard.
         '''
+        # 'accounts' sums per-source counts (= rows across sources, which double-counts
+        # an account found in N breaches); 'unique_accounts' is the true deduped document
+        # count (fast, from collstats) so the dashboard can show the honest headline.
         totals = {'accounts': 0, 'sources': 0, 'email': 0, 'username': 0,
                   'phone': 0, 'with_password': 0, 'with_hash': 0, 'with_service': 0,
-                  'filesize': 0}
+                  'filesize': 0, 'unique_accounts': 0}
+        try:
+            totals['unique_accounts'] = self.account_count()
+        except Exception:
+            pass
         domains, services, email_tld, service_tld = {}, {}, {}, {}
         pw_words, formats = {}, {}
         passwords, pw_len = {}, {}
@@ -685,7 +721,7 @@ class DB():
             'sample': samples, 'partial': partial,
         }
 
-    def search_records(self, keyword, query_type='auto', limit=100, max_time_ms=10000):
+    def search_records(self, keyword, query_type='auto', limit=100, max_time_ms=10000, mode='exact'):
         '''
         Thin wrapper used by the data-search API: validate the query type, run the
         indexed search, and return account records as plain dicts (human JSON).
@@ -696,11 +732,30 @@ class DB():
         partial results gathered so far with truncated=True.
         '''
         qt = validation.validate_query_type(keyword, query_type)
+        lim = max(1, int(limit))
+        # for an EXACT email lookup, verify the reconstructed address of each hit so a
+        # rare 48-bit email-hash collision can't surface a different person's record
+        expected_email = None
+        if qt == 'email':
+            try:
+                le, de = validation.clean_email(keyword).split('@')[:2]
+                le, de = Account.handle_special_email_cases(le, de)
+                expected_email = f'{le}@{de}'
+            except Exception:
+                expected_email = None
         out = []
         truncated = False
+        has_more = False
         try:
-            for doc in self.search(str(keyword), query_type=qt, limit=int(limit),
-                                   max_time_ms=max_time_ms):
+            # fetch one past the limit so we can tell the caller whether more exist
+            # (instead of the UI guessing "capped" when the total happens to == limit)
+            for doc in self.search(str(keyword), query_type=qt, limit=lim + 1,
+                                   max_time_ms=max_time_ms, mode=mode):
+                if expected_email is not None and doc.email != expected_email:
+                    continue
+                if len(out) >= lim:
+                    has_more = True
+                    break
                 try:
                     out.append(doc.json)
                 except Exception:
@@ -708,7 +763,83 @@ class DB():
         except pymongo.errors.ExecutionTimeout:
             truncated = True
         return {'query': str(keyword), 'type': qt, 'count': len(out),
-                'results': out, 'truncated': truncated}
+                'results': out, 'truncated': truncated, 'has_more': has_more}
+
+    def search_combined(self, conditions, limit=100, max_time_ms=10000):
+        '''
+        Boolean AND search: every condition must hold on the same account.  Each
+        condition is {'type': <query_type>, 'value': <term>, 'mode': exact|contains}.
+        e.g. [{'type':'domain','value':'gmail.com'}, {'type':'service','value':'roblox.com'}]
+        -> accounts whose email domain is gmail.com AND who were breached on roblox.com.
+        Returns the same shape as search_records.
+        '''
+        conds = [c for c in (conditions or []) if str(c.get('value', '')).strip()]
+        if not conds:
+            raise CredShedError('No search conditions given')
+        if len(conds) > 8:
+            raise CredShedError('Too many conditions (max 8)')
+        subqueries = [self._build_query(str(c['value']), c.get('type', 'auto'), mode=c.get('mode', 'exact'))
+                      for c in conds]
+        query = subqueries[0] if len(subqueries) == 1 else {'$and': subqueries}
+        lim = max(1, int(limit))
+        out, truncated, has_more = [], False, False
+        try:
+            cursor = self._op(self.accounts.find, query, limit=lim + 1, max_time_ms=max_time_ms)
+            for result in cursor:
+                if len(out) >= lim:
+                    has_more = True
+                    break
+                try:
+                    out.append(Account.from_document(result).json)
+                except Exception:
+                    continue
+        except pymongo.errors.ExecutionTimeout:
+            truncated = True
+        label = ' AND '.join(f"{c.get('type','auto')}={c['value']}" for c in conds)
+        return {'query': label, 'type': 'combined', 'conditions': conds, 'count': len(out),
+                'results': out, 'truncated': truncated, 'has_more': has_more}
+
+    def bulk_lookup(self, query_type, values, max_time_ms=15000, per_value=50, max_values=1000):
+        '''
+        Check many selectors of one type at once (e.g. a list of 5,000 emails) and
+        report, per value, how many records matched plus a few sample records.  Each
+        lookup is index-backed, so a capped batch returns quickly.
+        '''
+        seen, cleaned = set(), []
+        for v in values or []:
+            v = str(v).strip()
+            if v and v.lower() not in seen:
+                seen.add(v.lower())
+                cleaned.append(v)
+        if not cleaned:
+            raise CredShedError('No lookup values given')
+        truncated_values = len(cleaned) > max_values
+        cleaned = cleaned[:max_values]
+        results, total_hits = [], 0
+        for v in cleaned:
+            try:
+                query = self._build_query(v, query_type)
+            except CredShedError:
+                results.append({'value': v, 'count': 0, 'records': [], 'error': 'invalid'})
+                continue
+            recs, count = [], 0
+            try:
+                for doc in self._op(self.accounts.find, query, limit=per_value + 1, max_time_ms=max_time_ms):
+                    count += 1
+                    if len(recs) < per_value:
+                        try:
+                            recs.append(Account.from_document(doc).json)
+                        except Exception:
+                            pass
+            except pymongo.errors.ExecutionTimeout:
+                pass
+            more = count > per_value
+            results.append({'value': v, 'count': (per_value if more else count),
+                            'has_more': more, 'records': recs})
+            total_hits += (1 if count else 0)
+        return {'type': query_type, 'values_checked': len(cleaned),
+                'values_with_hits': total_hits, 'truncated_values': truncated_values,
+                'results': results}
 
 
     def add_accounts(self, source, force=False, batch_size=5000, workers=1,

@@ -64,8 +64,9 @@ class Account():
         self.misc = misc[:self.max_length_2]
         self.password = password[:self.max_length_1]
         for h in hashes:
-            if h not in self.hashes:
-                self.hashes.append(h[:self.max_length_2])
+            h = h[:self.max_length_2]        # truncate BEFORE the dedup check, else two
+            if h not in self.hashes:          # hashes differing only past the cap store twice
+                self.hashes.append(h)
 
         # phone: store bare normalized digits (country code preserved)
         if phone:
@@ -88,10 +89,12 @@ class Account():
                 self.phone = normalized[:self.max_length_1]
                 self.username = ''
 
-        # if password is hashed, put it in hash field
+        # if password is hashed, put it in hash field (dedup against existing hashes)
         if self.password:
             if validation.is_hash(self.password):
-                self.hashes.append(self.password)
+                h = self.password[:self.max_length_2]
+                if h not in self.hashes:
+                    self.hashes.append(h)
                 self.password = ''
 
         # if the password is super long, put it in misc

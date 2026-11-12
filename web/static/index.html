@@ -131,6 +131,14 @@
   select,input[type=text]{font:inherit; font-size:14px; color:var(--ink); background:var(--surface-2);
     border:1px solid var(--border); border-radius:9px; padding:8px 11px}
   input[type=text].q{flex:1; min-width:190px}
+  .chk{display:inline-flex; align-items:center; gap:5px; font-size:12.5px; color:var(--ink-2); white-space:nowrap; cursor:pointer}
+  .chk input{margin:0}
+  .androw{display:flex; gap:9px; flex-wrap:wrap; align-items:center; margin-top:7px}
+  .androw .andlbl{font-family:ui-monospace,monospace; font-size:11px; color:var(--s1); font-weight:700; letter-spacing:.05em}
+  .androw .andRemove{padding:4px 9px}
+  #bulkValues{width:100%; min-height:92px; margin-top:9px; font:13px ui-monospace,monospace; color:var(--ink); background:var(--surface); border:1px solid var(--border); border-radius:9px; padding:9px 11px; resize:vertical; box-sizing:border-box}
+  .bulktbl td.hit{color:var(--good); font-weight:600}
+  .bulktbl td.miss{color:var(--muted)}
   button.go{background:var(--s1); color:#fff; border-color:transparent; font-weight:600}
   button.go:hover{filter:brightness(1.07); background:var(--s1)}
   .hint{color:var(--muted); font-size:12px; margin:8px 2px 0}
@@ -173,18 +181,9 @@
   <div class="ttl">Search records</div>
   <section class="tool" id="searchTool">
     <form class="srow" id="searchForm" autocomplete="off">
-      <select id="qType" title="Field to search">
-        <option value="auto">Auto-detect</option>
-        <option value="email">Email</option>
-        <option value="domain">Domain</option>
-        <option value="tld">TLD / zone</option>
-        <option value="username">Username</option>
-        <option value="password">Password</option>
-        <option value="hash">Hash</option>
-        <option value="phone">Phone</option>
-        <option value="service">Service</option>
-      </select>
-      <input type="text" class="q" id="qText" placeholder="e.g. jdoe@example.com · .kz · P@ssw0rd · roblox.com">
+      <select id="qType" title="Field to search"></select>
+      <input type="text" class="q" id="qText" placeholder="e.g. jdoe@example.com · .kz · P@ssw0rd · roblox.com · Хоакин">
+      <label class="chk" title="Substring match on username / password / name"><input type="checkbox" id="qContains"> contains</label>
       <select id="qLimit" title="How many matching records to fetch">
         <option>100</option><option>250</option><option>500</option><option>1000</option>
         <option>2500</option><option>5000</option><option>10000</option><option>25000</option><option>50000</option>
@@ -192,7 +191,20 @@
       </select>
       <button type="submit" class="go">Search ›</button>
     </form>
-    <p class="hint" id="searchHint">Query the underlying records by any field (password / username / hash / phone / service are exact; email, domain and TLD understand prefixes). Press <kbd>/</kbd> to focus · click any value in the results to <b>pivot</b> a new search on it · export matches to CSV/JSON · click a TLD zone below to drill in.</p>
+    <div id="andConds"></div>
+    <div class="srow" style="margin-top:9px;gap:8px">
+      <button type="button" class="xbtn2" id="addAnd">+ AND condition</button>
+      <button type="button" class="xbtn2" id="bulkToggle">⇅ Bulk lookup</button>
+    </div>
+    <div id="bulkPanel" class="tool" hidden style="margin-top:10px;padding:13px 14px;background:var(--surface-2)">
+      <div class="srow" style="gap:8px">
+        <select id="bulkType" title="Field to look up"></select>
+        <button type="button" class="go" id="bulkRun">Check list ›</button>
+        <span class="hint" style="margin:0">Paste selectors, one per line (up to 1,000).</span>
+      </div>
+      <textarea id="bulkValues" placeholder="jdoe@example.com&#10;admin@acme.com&#10;…" spellcheck="false"></textarea>
+    </div>
+    <p class="hint" id="searchHint">Query any field (password / username / hash / phone / service / <b>name</b> are exact or <b>contains</b>; email, domain and TLD understand prefixes). <b>+ AND</b> stacks conditions on one account · <b>Bulk</b> checks a whole list · press <kbd>/</kbd> to focus · click any value to <b>pivot</b> · export to CSV/JSON.</p>
     <div class="resultbox" id="results" hidden></div>
   </section>
 
@@ -398,9 +410,13 @@ async function getFull(metric, target){
 function render(d){
   CURRENT=d;
   const t=d.totals;
+  // headline = true unique documents; the sum-of-sources (rows) is shown as context
+  const uniq = t.unique_accounts || t.accounts, rows = t.accounts;
+  const acctSub = uniq!==rows ? `${fmt(d.sources.length)} sources · ${fmt(rows)} rows · ${bytesH(t.filesize)}`
+                              : `${fmt(d.sources.length)} source${d.sources.length!=1?'s':''} · ${bytesH(t.filesize)}`;
   const tiles=[
-    ['Accounts', fmt(t.accounts), `${fmt(d.sources.length)} source${d.sources.length!=1?'s':''} · ${bytesH(t.filesize)}`, 'var(--s1)'],
-    ['With breached service', fmt(t.with_service), `${pct(t.with_service,t.accounts).toFixed(0)}% of records`, 'var(--s3)'],
+    ['Accounts', fmt(uniq), acctSub, 'var(--s1)'],
+    ['With breached service', fmt(t.with_service), `${pct(t.with_service,rows).toFixed(0)}% of rows`, 'var(--s3)'],
     ['With password', fmt(t.with_password), `${pct(t.with_password,t.accounts).toFixed(0)}% plaintext`, 'var(--s1)'],
     ['With phone', fmt(t.phone), `${pct(t.phone,t.accounts).toFixed(1)}% of records`, 'var(--s2)'],
     ['With hash', fmt(t.with_hash), 'hashed secrets', 'var(--s5)'],
@@ -617,6 +633,9 @@ async function download(name, text, type){
 }
 function pivotTo(pt, pv){
   closeModal();
+  $('#andConds').innerHTML='';                 // a pivot is a clean single-field lookup
+  const cx=$('#qContains'); if(cx) cx.checked=false;
+  const bp=$('#bulkPanel'); if(bp) bp.hidden=true;
   $('#qType').value=pt; $('#qText').value=String(pv);
   window.scrollTo({top:0, behavior:'smooth'});
   runSearch();
@@ -632,7 +651,7 @@ function renderRecords(d){
   LAST_RESULTS = d.results||[];
   const RENDER_CAP = 2000;   // keep every fetched row in LAST_RESULTS (exportable); only
                              // render a slice so a huge result set can't freeze the table
-  const n=d.count||0, capped = n>=d.limit;
+  const n=d.count||0, capped = (d.has_more!==undefined) ? !!d.has_more : (n>=d.limit);
   const trunc = d.truncated? ` · <span class="warn">scan timed out; partial — narrow the query or build an index</span>`:'';
   const capMsg = !capped ? ''
     : d.limit>=100000 ? ` · <span class="warn">reached the 100k-record cap — narrow the query to reach the rest</span>`
@@ -649,16 +668,79 @@ function renderRecords(d){
   if(j) j.onclick=()=>download(`credshed_${d.type}_${Date.now()}.json`, JSON.stringify(LAST_RESULTS,null,2), 'application/json');
 }
 
+const SEARCH_TYPES=[['auto','Auto-detect'],['email','Email'],['domain','Domain'],['tld','TLD / zone'],['username','Username'],['password','Password'],['misc','Name / misc'],['hash','Hash'],['phone','Phone'],['service','Service']];
+const typeOptions=sel=>SEARCH_TYPES.map(([v,l])=>`<option value="${v}"${v===sel?' selected':''}>${l}</option>`).join('');
+
+function gatherConditions(){
+  const out=[]; const q=$('#qText').value.trim();
+  if(q) out.push({type:$('#qType').value, value:q, mode:$('#qContains').checked?'contains':'exact'});
+  document.querySelectorAll('#andConds .androw').forEach(row=>{
+    const v=row.querySelector('.andText').value.trim();
+    if(v) out.push({type:row.querySelector('.andType').value, value:v, mode:row.querySelector('.andContains').checked?'contains':'exact'});
+  });
+  return out;
+}
+function addAndRow(){
+  const div=document.createElement('div'); div.className='androw';
+  div.innerHTML=`<span class="andlbl">AND</span><select class="andType">${typeOptions('service')}</select>`+
+    `<input type="text" class="andText q" placeholder="value"><label class="chk"><input type="checkbox" class="andContains"> contains</label>`+
+    `<button type="button" class="xbtn2 andRemove" title="Remove condition">✕</button>`;
+  div.querySelector('.andRemove').onclick=()=>div.remove();
+  div.querySelector('.andText').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); runSearch(); }});
+  $('#andConds').appendChild(div); div.querySelector('.andText').focus();
+}
+
 async function runSearch(){
-  const q=$('#qText').value.trim(); if(!q) return;
-  const type=$('#qType').value, limit=$('#qLimit').value;
+  const limit=$('#qLimit').value, contains=$('#qContains').checked;
+  const conds=gatherConditions();
   const box=$('#results'); box.hidden=false;
+  if(conds.length>=2){   // boolean AND across conditions
+    if(!LIVE){ box.innerHTML='<p class="hint warn">Combined (AND) search needs the live backend.</p>'; return; }
+    box.innerHTML='<p class="hint">Searching…</p>';
+    try{
+      const r=await fetch('api/combined',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({conditions:conds, limit:parseInt(limit,10)||100})});
+      renderRecords(await r.json());
+    }catch(e){ box.innerHTML=`<p class="hint err">Search failed: ${esc(e.message)}</p>`; }
+    return;
+  }
+  const q=$('#qText').value.trim(); if(!q) return;
+  const type=$('#qType').value;
   if(!LIVE){ const lim=parseInt(limit,10); renderRecords(offlineSearch(type, q, lim>0?lim:100000)); return; }  // "All" (0) -> all samples
   box.innerHTML='<p class="hint">Searching…</p>';
   try{
-    const r=await fetch(`api/search?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}&limit=${encodeURIComponent(limit)}`);
-    const d=await r.json(); renderRecords(d);
+    const r=await fetch(`api/search?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}&limit=${encodeURIComponent(limit)}${contains?'&mode=contains':''}`);
+    renderRecords(await r.json());
   }catch(e){ box.innerHTML=`<p class="hint err">Search failed: ${esc(e.message)}</p>`; }
+}
+
+function toggleBulk(){ const p=$('#bulkPanel'); p.hidden=!p.hidden; if(!p.hidden) $('#bulkValues').focus(); }
+async function runBulk(){
+  const type=$('#bulkType').value;
+  const values=$('#bulkValues').value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  const box=$('#results'); box.hidden=false;
+  if(!values.length){ box.innerHTML='<p class="hint warn">Paste at least one value, one per line.</p>'; return; }
+  if(!LIVE){ box.innerHTML='<p class="hint warn">Bulk lookup needs the live backend.</p>'; return; }
+  box.innerHTML=`<p class="hint">Checking ${values.length} value${values.length!=1?'s':''}…</p>`;
+  try{
+    const r=await fetch('api/bulk',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type,values})});
+    renderBulk(await r.json());
+  }catch(e){ box.innerHTML=`<p class="hint err">Bulk lookup failed: ${esc(e.message)}</p>`; }
+}
+function renderBulk(d){
+  const box=$('#results'); box.hidden=false;
+  if(d.error){ box.innerHTML=`<p class="hint err">${esc(d.error)}</p>`; return; }
+  const rows=d.results||[]; LAST_RESULTS=rows.flatMap(r=>r.records||[]);
+  const body=rows.map(r=>{ const c=r.count||0, cls=c?'hit':'miss', val=esc(r.value);
+    return `<tr><td class="${cls}">${val}</td><td class="num tnum ${cls}">${c?fmt(c)+(r.has_more?'+':''):'—'}</td>`+
+      `<td>${c?`<span class="pivot" data-pt="${esc(d.type)}" data-pv="${val}">view ›</span>`:''}</td></tr>`; }).join('');
+  box.innerHTML=`<div class="rhead"><span class="hint" style="margin:0"><b>${fmt(d.values_with_hits||0)}</b> of ${fmt(d.values_checked||0)} ${esc(d.type)} value${d.values_checked!=1?'s':''} found`+
+    `${d.truncated_values?' · <span class="warn">list capped at 1,000</span>':''}</span><span class="sp"></span>`+
+    (LAST_RESULTS.length?`<button class="xbtn2" id="expCsv">⤓ CSV (records)</button><button class="xbtn2" id="expJson">⤓ JSON</button>`:'')+`</div>`+
+    `<div class="resultbox"><table class="recs bulktbl"><thead><tr><th>Value</th><th class="num">Matches</th><th></th></tr></thead><tbody>${body}</tbody></table></div>`;
+  const c=$('#expCsv'), j=$('#expJson');
+  if(c) c.onclick=()=>download(`credshed_bulk_${d.type}_${Date.now()}.csv`, '﻿'+toCSV(LAST_RESULTS), 'text/csv');
+  if(j) j.onclick=()=>download(`credshed_bulk_${d.type}_${Date.now()}.json`, JSON.stringify(d.results,null,2), 'application/json');
 }
 
 // ---- TLD drill-down modal ---------------------------------------------------
@@ -757,6 +839,12 @@ async function load(){
   apply(mode); $('#theme').onclick=()=>{mode=mode==='auto'?'light':mode==='light'?'dark':'auto'; apply(mode);}; })();
 $('#refresh').onclick=load;
 $('#searchForm').addEventListener('submit', e=>{ e.preventDefault(); runSearch(); });
+// populate the field-type dropdowns + wire the advanced-search controls
+$('#qType').innerHTML = typeOptions('auto');
+$('#bulkType').innerHTML = typeOptions('email');
+$('#addAnd').onclick = addAndRow;
+$('#bulkToggle').onclick = toggleBulk;
+$('#bulkRun').onclick = runBulk;
 load();
 </script>
 </body>

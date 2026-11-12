@@ -66,7 +66,9 @@ def main():
           res and all(a.domain.rsplit('.', 1)[-1] == tld for a in res), '.' + tld)
 
     # USERNAME ------------------------------------------------------------
-    doc = sample({'u': {'$exists': True}}, {'u': 1})
+    # require a non-whitespace value: a degenerate whitespace-only probe would
+    # (correctly) be rejected as an empty search term
+    doc = sample({'u': {'$regex': r'\S'}}, {'u': 1})
     if doc:
         uname = doc['u']
         res = list(cs.search(uname, query_type='username', limit=50))
@@ -74,7 +76,7 @@ def main():
               uname[:40])
 
     # PASSWORD (reverse) --------------------------------------------------
-    doc = sample({'p': {'$exists': True}}, {'p': 1})
+    doc = sample({'p': {'$regex': r'\S'}}, {'p': 1})
     if doc:
         pw = doc['p']
         res = list(cs.search(pw, query_type='password', limit=50))

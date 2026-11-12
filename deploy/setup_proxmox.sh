@@ -28,6 +28,9 @@ APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MONGO_DATA="${MONGO_DATA:-/opt/credshed/db}"
 WEB_PORT="${WEB_PORT:-8000}"
 WEB_BIND="${WEB_BIND:-0.0.0.0}"
+# one uvicorn worker is GIL/CPU-bound under concurrent searches; scale to cores (capped).
+# NB: the app's in-process caches are per-worker, so each worker warms its own.
+WEB_WORKERS="${WEB_WORKERS:-$(n=$(nproc 2>/dev/null || echo 2); echo $(( n > 8 ? 8 : (n < 2 ? 2 : n) )))}"
 MONGO_VERSION="${MONGO_VERSION:-}"   # empty => auto-pick by kernel (see below)
 SKIP_MONGO="${SKIP_MONGO:-0}"
 MONGO_USER="root"
@@ -312,7 +315,7 @@ Type=simple
 WorkingDirectory=$APP_DIR
 Environment=CREDSHED_WEB_HOST=$WEB_BIND
 Environment=CREDSHED_WEB_PORT=$WEB_PORT
-ExecStart=$VENV/bin/uvicorn web.app:app --host $WEB_BIND --port $WEB_PORT
+ExecStart=$VENV/bin/uvicorn web.app:app --host $WEB_BIND --port $WEB_PORT --workers $WEB_WORKERS
 Restart=on-failure
 RestartSec=3
 

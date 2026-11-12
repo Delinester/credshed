@@ -1,5 +1,6 @@
 import os
 import magic
+import codecs
 import hashlib
 import pathlib
 from ..errors import *
@@ -300,6 +301,11 @@ class File(type(pathlib.Path())):
         # every piece; we strip it once, only at file start, to match the serial path
         dec = 'utf-8' if (enc or '').lower().replace('-', '') in ('utf8', 'usascii', 'ascii') else enc
         strip_bom = (start == 0)
+        # incremental decoder: when a >1 MiB line is read in MAXL-byte pieces, a cut
+        # can land mid multibyte-char; the incremental decoder holds the 1-3 trailing
+        # bytes and completes the char on the next piece, so no boundary char is ever
+        # mangled (a plain per-piece .decode() backslash-replaced it before).
+        decoder = codecs.getincrementaldecoder(dec)('backslashreplace')
         i = 0
 
         def publish(pos):
@@ -323,19 +329,27 @@ class File(type(pathlib.Path())):
                 while True:
                     raw = f.readline(MAXL)
                     if not raw:
+                        tail = decoder.decode(b'', final=True)
+                        if tail:
+                            yield tail.strip('\r\n\t')
                         publish(end)
                         return
                     i += 1
                     if i % every == 0:
                         publish(f.tell())
-                    s = raw.decode(dec, errors='backslashreplace')
+                    eol = raw.endswith(b'\n')
+                    s = decoder.decode(raw)   # holds an incomplete tail char for the next piece
                     if strip_bom:
                         strip_bom = False
                         if s[:1] == '﻿':
                             s = s[1:]
-                    yield s.strip('\r\n\t')
-                    if raw.endswith(b'\n'):
+                    if s or eol:   # suppress an empty piece that is only a held mid-char
+                        yield s.strip('\r\n\t')
+                    if eol:
                         break
+        tail = decoder.decode(b'', final=True)
+        if tail:
+            yield tail.strip('\r\n\t')
         publish(end)
 
 
