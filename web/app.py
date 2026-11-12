@@ -67,7 +67,8 @@ def full(ttl=CACHE_TTL):
 def compact(d, n=15):
     '''a small initial payload derived from the full aggregation'''
     def reg(r):
-        return {'regions': r['regions'], 'countries': r['countries'][:n * 2], 'zones': r['zones'][:n]}
+        return {'regions': r['regions'], 'countries': r['countries'][:n * 2],
+                'zones': r['zones'][:n], 'country_tld': r.get('country_tld', {})}
     return {
         'totals': d['totals'], 'indexes': d['indexes'], 'formats': d['formats'],
         'sources': d['sources'],

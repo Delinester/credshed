@@ -461,18 +461,32 @@ class DB():
         }
 
     def _regions_from_hist(self, hist, zones_top=60):
-        '''roll a {tld: count} histogram up into zones/countries/regions'''
+        '''
+        Roll a {tld: count} histogram up into zones / countries / regions.
+
+        'countries' holds ONLY real country names: generic gTLDs (.com, .net,
+        .org) and unresolved zones (.cem) have no country, so they are kept out
+        of the country column entirely (they still land in 'zones' and in the
+        'regions' column's Generic / Other buckets).  'country_tld' maps each
+        country to its largest contributing zone, so the UI can drill a country
+        straight into that TLD zone.
+        '''
         countries, region_rollup = {}, {}
+        country_tld, country_best = {}, {}
         for tld, count in hist.items():
             country, region = regions.region_of(tld)
-            label = country if country else (f'.{tld}' if tld else 'unknown')
-            countries[label] = countries.get(label, 0) + count
             region_rollup[region] = region_rollup.get(region, 0) + count
+            if country:                              # real country only
+                countries[country] = countries.get(country, 0) + count
+                if count > country_best.get(country, -1):
+                    country_best[country] = count
+                    country_tld[country] = tld       # representative zone to drill
         srt = lambda d: sorted(d.items(), key=lambda x: x[1], reverse=True)
         return {
             'zones': srt(hist)[:zones_top],
             'countries': srt(countries),
             'regions': srt(region_rollup),
+            'country_tld': country_tld,
         }
 
     def region_stats(self, target='email'):
@@ -486,9 +500,9 @@ class DB():
         region_rollup = {}
         for tld, count in zones:
             country, region = regions.region_of(tld)
-            label = country if country else (f'.{tld}' if tld else 'unknown')
-            countries[label] = countries.get(label, 0) + count
             region_rollup[region] = region_rollup.get(region, 0) + count
+            if country:                              # real country names only
+                countries[country] = countries.get(country, 0) + count
         return {
             'zones': zones,
             'countries': sorted(countries.items(), key=lambda x: x[1], reverse=True),
@@ -551,19 +565,6 @@ class DB():
 
 
 
-    def _domains_in_zone(self, zone, top_n=200):
-        '''
-        Top email domains that belong to a TLD zone, rolled up from the per-source
-        top_domains histograms (no account scan).  Fast + exact for the heavy
-        hitters that the stored histograms keep.
-        '''
-        agg = {}
-        for s in self.sources.find({}, {'top_domains': 1}):
-            for d, c in self._unescape_keys(s.get('top_domains', {})).items():
-                if validation.tld_of(d) == zone:
-                    agg[d] = agg.get(d, 0) + int(c)
-        return sorted(agg.items(), key=lambda x: x[1], reverse=True)[:top_n]
-
     def tld_detail(self, zone, target='email', top_n=200, sample=30, max_ms=10000):
         '''
         DFIR drill-down for ONE domain zone (e.g. ".kz").  Returns the account
@@ -608,6 +609,14 @@ class DB():
             # zone (e.g. ".kz" -> companya.kz: 1566, sub.companyb.kz: 443); for
             # target='email' it lists the services the zone's victims appear on.
             'v': grp('v'),
+            # per-DOMAIN breakdown straight from the accounts (not the capped
+            # histograms, so it shows EVERY domain a live search would, with exact
+            # counts).  The email domain lives reversed in the _id prefix before
+            # '|', so group on that and reverse it back for display.
+            'dom': [{'$match': {'_id': {'$type': 'string'}}},
+                    {'$group': {'_id': {'$arrayElemAt': [{'$split': ['$_id', '|']}, 0]},
+                                'c': {'$sum': 1}}},
+                    {'$sort': {'c': -1}}, {'$limit': int(top_n)}],
             # coverage + login-type split, same single pass (investigator context:
             # "what share of this zone's accounts expose a plaintext password / a
             # breached service / a hash", and how the accounts identify their owner)
@@ -619,8 +628,9 @@ class DB():
                                 'username': {'$sum': has('u')},
                                 'phone': {'$sum': has('t')}}}],
         }
-        total, passwords, usernames, services = None, [], [], []
+        total, passwords, usernames, services, domains = None, [], [], [], []
         coverage, login_types = {}, {}
+        partial = False
         try:
             res = next(coll.aggregate([{'$match': match}, {'$facet': facets}],
                                       maxTimeMS=max_ms, allowDiskUse=True), {})
@@ -637,14 +647,21 @@ class DB():
             passwords = unpack('p')
             usernames = unpack('u')
             services = unpack('v', reverse=True)
+            # domains grouped straight from the accounts (reversed-domain _id prefix);
+            # complete + exact, so the drill-down matches a live domain search.
+            domains = unpack('dom', reverse=True)
             cov = (res.get('cov') or [{}])[0]
             coverage = {k: int(cov.get(k, 0) or 0)
                         for k in ('with_password', 'with_service', 'with_hash')}
             login_types = {k: int(cov.get(k, 0) or 0) for k in ('email', 'username', 'phone')}
+        except pymongo.errors.ExecutionTimeout as e:
+            # giant generic zone (e.g. .com, millions of accounts): the real-time
+            # roll-up can't finish inside the budget.  Flag it so the UI says so
+            # instead of showing a silently-empty zone.
+            partial = True
+            log.warning(f'tld_detail for .{zone} exceeded {max_ms}ms: {e}')
         except pymongo.errors.PyMongoError as e:
             log.warning(f'tld_detail aggregation for .{zone}: {e}')
-
-        domains = self._domains_in_zone(zone, top_n) if target == 'email' else []
 
         samples = []
         try:
@@ -661,7 +678,7 @@ class DB():
             'coverage': coverage, 'login_types': login_types,
             'top_domains': domains, 'top_passwords': passwords,
             'top_services': services, 'top_usernames': usernames,
-            'sample': samples,
+            'sample': samples, 'partial': partial,
         }
 
     def search_records(self, keyword, query_type='auto', limit=100, max_time_ms=10000):
