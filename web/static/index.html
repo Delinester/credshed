@@ -185,8 +185,10 @@
         <option value="service">Service</option>
       </select>
       <input type="text" class="q" id="qText" placeholder="e.g. jdoe@example.com · .kz · P@ssw0rd · roblox.com">
-      <select id="qLimit" title="Max results">
+      <select id="qLimit" title="How many matching records to fetch">
         <option>100</option><option>250</option><option>500</option><option>1000</option>
+        <option>2500</option><option>5000</option><option>10000</option><option>25000</option><option>50000</option>
+        <option value="0">All (max 100k)</option>
       </select>
       <button type="submit" class="go">Search ›</button>
     </form>
@@ -628,14 +630,20 @@ function renderRecords(d){
   const box=$('#results'); box.hidden=false;
   if(d.error){ box.innerHTML=`<p class="hint err">${esc(d.error)}</p>`; return; }
   LAST_RESULTS = d.results||[];
+  const RENDER_CAP = 2000;   // keep every fetched row in LAST_RESULTS (exportable); only
+                             // render a slice so a huge result set can't freeze the table
   const n=d.count||0, capped = n>=d.limit;
   const trunc = d.truncated? ` · <span class="warn">scan timed out; partial — narrow the query or build an index</span>`:'';
+  const capMsg = !capped ? ''
+    : d.limit>=100000 ? ` · <span class="warn">reached the 100k-record cap — narrow the query to reach the rest</span>`
+    : ` · <span class="warn">hit the ${fmt(d.limit)}-record fetch limit — raise “Max results” (up to All / 100k) to find more</span>`;
+  const renderMsg = n>RENDER_CAP? ` · showing first ${fmt(RENDER_CAP)} in the table — export CSV/JSON for all ${n.toLocaleString()}`:'';
   box.innerHTML = `<div class="rhead">`+
     `<span class="hint" style="margin:0">${n.toLocaleString()} record${n!=1?'s':''} for <b>${esc(d.query)}</b> `+
-    `<span class="tag">${esc(d.type)}</span>${d.demo?' <span class="tag">sample data</span>':''}${capped?` · capped at ${fmt(d.limit)}`:''}${trunc}</span>`+
+    `<span class="tag">${esc(d.type)}</span>${d.demo?' <span class="tag">sample data</span>':''}${capMsg}${renderMsg}${trunc}</span>`+
     `<span class="sp"></span>`+
     (n? `<button class="xbtn2" id="expCsv">⤓ CSV</button><button class="xbtn2" id="expJson">⤓ JSON</button>`:'')+
-    `</div>`+ recordsTableHTML(d.results);
+    `</div>`+ recordsTableHTML(d.results.slice(0, RENDER_CAP));
   const c=$('#expCsv'), j=$('#expJson');
   if(c) c.onclick=()=>download(`credshed_${d.type}_${Date.now()}.csv`, '﻿'+toCSV(LAST_RESULTS), 'text/csv');  // BOM: Cyrillic/CJK opens correctly in Excel
   if(j) j.onclick=()=>download(`credshed_${d.type}_${Date.now()}.json`, JSON.stringify(LAST_RESULTS,null,2), 'application/json');
@@ -645,7 +653,7 @@ async function runSearch(){
   const q=$('#qText').value.trim(); if(!q) return;
   const type=$('#qType').value, limit=$('#qLimit').value;
   const box=$('#results'); box.hidden=false;
-  if(!LIVE){ renderRecords(offlineSearch(type, q, parseInt(limit,10)||100)); return; }
+  if(!LIVE){ const lim=parseInt(limit,10); renderRecords(offlineSearch(type, q, lim>0?lim:100000)); return; }  // "All" (0) -> all samples
   box.innerHTML='<p class="hint">Searching…</p>';
   try{
     const r=await fetch(`api/search?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}&limit=${encodeURIComponent(limit)}`);

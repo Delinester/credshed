@@ -44,6 +44,10 @@ _src_cache = {}   # source_id -> (timestamp, detail dict)
 # How deep the cached aggregation goes (the dashboard's "Show all" browses this).
 FULL_TOP = 2000      # top services / domains / password base-words
 FULL_ZONES = 3000    # TLD zones per target
+# Hard ceiling on a single record-search fetch.  The dashboard offers 100…50000 plus
+# "All", which sends limit<=0 and resolves to this.  It bounds the response size /
+# worker memory while still letting an investigator pull far more than the old 1000.
+SEARCH_MAX = 100000
 
 
 def credshed():
@@ -142,9 +146,13 @@ def api_search(q: str, type: str = 'auto', limit: int = 100):
     dashboard is for authorised investigators on an internal, access-controlled
     network, where seeing the underlying data is the point.
     '''
-    limit = max(1, min(int(limit), 1000))
+    n = int(limit)
+    limit = SEARCH_MAX if n <= 0 else max(1, min(n, SEARCH_MAX))   # <=0 means "All"
+    # bigger fetches get a longer (still bounded) scan budget; an indexed search
+    # finishes fast, an un-indexed one still hits the ceiling and returns partial
+    max_ms = min(30000, max(10000, limit * 2))
     try:
-        data = credshed().db.search_records(q, query_type=type, limit=limit)
+        data = credshed().db.search_records(q, query_type=type, limit=limit, max_time_ms=max_ms)
         data['limit'] = limit
         return JSONResponse(data)
     except CredShedError as e:
