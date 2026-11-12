@@ -578,10 +578,19 @@ function toCSV(recs){
   const q=v=>{ v=Array.isArray(v)?v.join('|'):(v==null?'':String(v)); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
   return [head.join(',')].concat(recs.map(r=>cols.map(c=>q(r[c])).join(','))).join('\n');
 }
-function download(name, text, type){
+async function download(name, text, type){
+  // In a published artifact (sandboxed), a plain blob link is inert — use the
+  // downloads capability. In the real backend-served dashboard (an ordinary
+  // browser, where window.claude is absent) fall back to the blob link.
+  try{
+    if(window.claude && claude.use){
+      const dl = await claude.use('downloads');
+      if(dl){ await dl.save({filename:name, data:text}); return; }
+    }
+  }catch(e){ /* declined/unavailable: fall through to the blob path */ }
   try{ const b=new Blob([text],{type}); const u=URL.createObjectURL(b);
     const a=document.createElement('a'); a.href=u; a.download=name; document.body.appendChild(a); a.click();
-    a.remove(); setTimeout(()=>URL.revokeObjectURL(u),1000); }catch(e){ alert('Export failed: '+e.message); }
+    a.remove(); setTimeout(()=>URL.revokeObjectURL(u),1000); }catch(e){}
 }
 document.addEventListener('click', e=>{
   const el=e.target.closest('.pivot'); if(!el) return;
