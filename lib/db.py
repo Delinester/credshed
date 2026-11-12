@@ -247,8 +247,10 @@ class DB():
             domain = re.escape(domain[::-1])
 
             if domain.endswith('.'):
-                # if query is like ".com"
-                query_regex = rf'^{domain}[\w.]*\|'
+                # if query is like ".com".  [^|]* (everything up to the _id's '|'
+                # separator) is Unicode-safe — MongoDB's \w is ASCII-only, which both
+                # missed hyphenated subdomains AND zero-matched IDN domains (e.g. .рф).
+                query_regex = rf'^{domain}[^|]*\|'
             else:
                 # or if query is like "example.com"
                 query_regex = rf'^{domain}[\.\|]'
@@ -582,7 +584,9 @@ class DB():
         bounded, best-effort result instead of hanging; ccTLDs are fast.
         '''
         zone = str(zone).strip().lower().lstrip('.')
-        if not zone or not re.match(r'^[a-z0-9][a-z0-9.\-]{0,23}$', zone):
+        # IDN-aware zone guard: accept non-ASCII ccTLDs (.рф, .укр, .中国) that ingest can
+        # now populate, while still rejecting regex metacharacters / injection ( | $ ( \ … ).
+        if not zone or not re.match(rf'^[a-z0-9{validation._NON_ASCII}][a-z0-9.\-{validation._NON_ASCII}]{{0,23}}$', zone):
             raise CredShedError(f'Invalid TLD zone: {zone!r}')
         rev = re.escape(zone[::-1])
         if target == 'service':

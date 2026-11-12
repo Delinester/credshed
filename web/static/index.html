@@ -637,7 +637,7 @@ function renderRecords(d){
     (n? `<button class="xbtn2" id="expCsv">⤓ CSV</button><button class="xbtn2" id="expJson">⤓ JSON</button>`:'')+
     `</div>`+ recordsTableHTML(d.results);
   const c=$('#expCsv'), j=$('#expJson');
-  if(c) c.onclick=()=>download(`credshed_${d.type}_${Date.now()}.csv`, toCSV(LAST_RESULTS), 'text/csv');
+  if(c) c.onclick=()=>download(`credshed_${d.type}_${Date.now()}.csv`, '﻿'+toCSV(LAST_RESULTS), 'text/csv');  // BOM: Cyrillic/CJK opens correctly in Excel
   if(j) j.onclick=()=>download(`credshed_${d.type}_${Date.now()}.json`, JSON.stringify(LAST_RESULTS,null,2), 'application/json');
 }
 

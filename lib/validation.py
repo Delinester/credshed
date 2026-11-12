@@ -9,16 +9,20 @@ from .errors import *
 from base64 import b64decode
 from binascii import Error as Base64Error
 
-# for checking if string is an email
-email_regex = re.compile(r'^([A-Z0-9][A-Z0-9_\-\.\+]{,100})@([A-Z0-9][A-Z0-9_\-\.]{,100})\.([A-Z]{2,8})$', re.I)
-# for searching for email in string
-email_regex_search = re.compile(r'[A-Z0-9][A-Z0-9_\-\.\+]{,100}@[A-Z0-9][A-Z0-9_\-\.]{,100}\.[A-Z]{2,8}', re.I)
+# non-ASCII code points (Cyrillic, CJK, accented latin, …) allowed in internationalized
+# (IDN) emails / usernames / domains so they are not dropped or mangled
+_NON_ASCII = r'À-\U0010ffff'
+# for checking if string is an email (IDN-aware: accepts non-ASCII local parts, domains and TLDs)
+email_regex = re.compile(rf'^([A-Z0-9{_NON_ASCII}][A-Z0-9_\-\.\+{_NON_ASCII}]{{,100}})@([A-Z0-9{_NON_ASCII}][A-Z0-9_\-\.{_NON_ASCII}]{{,100}})\.([A-Z{_NON_ASCII}]{{2,8}})$', re.I)
+# for searching for email in string (IDN-aware, mirrors email_regex so the parser's
+# salvage/extraction path finds Cyrillic/CJK emails embedded in dirty lines too)
+email_regex_search = re.compile(rf'[A-Z0-9{_NON_ASCII}][A-Z0-9_\-\.\+{_NON_ASCII}]{{,100}}@[A-Z0-9{_NON_ASCII}][A-Z0-9_\-\.{_NON_ASCII}]{{,100}}\.[A-Z{_NON_ASCII}]{{2,8}}', re.I)
 # less-strict version
 fuzzy_email_regex = re.compile(r'^(.+)@(.+)\.(.+)')
 # domain
 domain_regex = re.compile(r'^([A-Z0-9_\-\.]*)\.([A-Z]{2,24})$', re.I)
-# a bare TLD / domain-zone query, e.g. ".ru", "ru", ".co.uk"
-tld_query_regex = re.compile(r'^\.?([a-z0-9]{2,24}(?:\.[a-z0-9]{2,24})?)$', re.I)
+# a bare TLD / domain-zone query, e.g. ".ru", "ru", ".co.uk", ".рф", ".中国"
+tld_query_regex = re.compile(rf'^\.?([a-z0-9{_NON_ASCII}]{{2,24}}(?:\.[a-z0-9{_NON_ASCII}]{{2,24}})?)$', re.I)
 # host / url-ish first field of a ULP (URL:login:password) line
 url_scheme_regex = re.compile(r'^[a-z][a-z0-9+.\-]{0,15}://', re.I)
 host_split_regex = re.compile(r'[/?#\\ ]')
@@ -62,8 +66,10 @@ hash_regexes = [
 
 hash_regexes_str   = [re.compile(r, re.I) for r in hash_regexes]
 
-# valid characters for email addresses
-email_chars_re = re.compile(r'[^abcdefghijklmnopqrstuvwxyz0123456789\.@_\-\+]')
+# characters to STRIP from an email.  Note: we keep A-Z out of this set on purpose and
+# lowercase first in clean_email(), so an uppercase email is normalised (Bob->bob), NOT
+# corrupted by deleting its capitals.  Non-ASCII letters are kept for IDN addresses.
+email_chars_re = re.compile(rf'[^a-z0-9.@_\-\+{_NON_ASCII}]')
 
 all_chars = (chr(i) for i in range(sys.maxunicode))
 categories = {'L', 'M', 'N', 'P', 'S'}
@@ -84,7 +90,9 @@ def clean_utf(s, allow_whitespace=True):
 
 def clean_email(s):
 
-    return email_chars_re.sub('', s)
+    # lowercase first so capitals are normalised (bob == Bob), not deleted; then drop
+    # characters that can't appear in an email while preserving non-ASCII (IDN) letters
+    return email_chars_re.sub('', s.lower())
 
 
 def is_domain(domain):
