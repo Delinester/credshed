@@ -79,24 +79,26 @@ class Source():
         self.description = ''
         # SHA1 hash of file
         self._hash = None
-        # top (email) domains  (bounded so a 250 GB file can't exhaust RAM)
-        self.domains = BoundedCounter(500000)
+        # top (email) domains  (bounded so a 250 GB file can't exhaust RAM).
+        # 250k cap: pruning keeps the top ~125k, so the stored top-1000 is exact
+        # while per-worker RAM stays modest even on a huge, high-cardinality file.
+        self.domains = BoundedCounter(250000)
         # top base words from passwords
-        self.password_basewords = BoundedCounter(500000)
+        self.password_basewords = BoundedCounter(250000)
         # top base words from misc/description field
-        self.misc_basewords = BoundedCounter(500000)
+        self.misc_basewords = BoundedCounter(250000)
         # DFIR/threat-intel: plaintext-password frequency + a length histogram
         # (how weak/strong the population's passwords are) — both cheap to tally.
-        # 250k cap keeps the stored top-1000 exact while bounding per-worker RAM.
-        self.passwords = BoundedCounter(250000)
+        # 150k cap keeps the stored top-1000 exact while bounding per-worker RAM.
+        self.passwords = BoundedCounter(150000)
         self.password_lengths = {}   # length -> count
         # DFIR enhancement: per-source histograms for fast regional / service stats.
         # Real TLD zones number only a few thousand, so a 500k cap keeps them exact
         # while bounding the memory a flood of malformed "zones" from dirty hosts
         # could otherwise consume; host/baseword counters prune their long tail.
-        self.email_tlds = BoundedCounter(500000)     # email-domain zone -> count (victim geography)
-        self.services = BoundedCounter(500000)       # breached service host -> count
-        self.service_tlds = BoundedCounter(500000)   # service zone -> count
+        self.email_tlds = BoundedCounter(250000)     # email-domain zone -> count (victim geography)
+        self.services = BoundedCounter(250000)       # breached service host -> count
+        self.service_tlds = BoundedCounter(250000)   # service zone -> count
         # login-type + phone tallies
         self.login_types = {'email': 0, 'username': 0, 'phone': 0}
         self.phone_count = 0

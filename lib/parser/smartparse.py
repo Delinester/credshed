@@ -20,6 +20,7 @@ import re
 import json
 import logging
 import statistics
+import unicodedata
 from .file import File
 from ..errors import *
 from ..account import Account
@@ -748,6 +749,14 @@ class SmartParse:
             self.stats['lines_total'] += 1
             if not line.strip():
                 self.stats['lines_blank'] += 1
+                continue
+            # Drop decorative / promo banner lines (emoji- or box-drawing-led),
+            # common in "mix" dumps, e.g. "🌐 Website: https://...".  No real
+            # credential line starts with a Symbol glyph, so this never discards
+            # data; the check is one char-compare for the ASCII-led majority and
+            # only pays a category lookup on a non-ASCII first char.
+            if line[0] > '\x7f' and unicodedata.category(line[0]) in ('So', 'Sk', 'Sm', 'Sc'):
+                self.stats['lines_junk'] += 1
                 continue
             if len(line) > MAX_LINE:
                 line = line[:MAX_LINE]

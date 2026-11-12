@@ -59,7 +59,7 @@
   .tiles{display:grid; grid-template-columns:repeat(auto-fit,minmax(168px,1fr)); gap:14px; margin-top:12px}
   .tile{background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:16px 16px 14px; box-shadow:var(--shadow)}
   .tile .k{font-size:12px; color:var(--ink-2); display:flex; align-items:center; gap:7px}
-  .tile .v{font-size:30px; font-weight:750; margin-top:7px; letter-spacing:-.01em}
+  .tile .v{font-size:clamp(22px,2.1vw,30px); font-weight:750; margin-top:7px; letter-spacing:-.02em; white-space:nowrap}
   .tile .x{font-size:12px; color:var(--muted); margin-top:3px}
   .swatch{width:9px;height:9px;border-radius:2px;flex:none}
 
