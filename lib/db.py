@@ -598,10 +598,26 @@ class DB():
             return [{'$match': {field: {'$type': 'string'}}},
                     {'$group': {'_id': f'${field}', 'c': {'$sum': 1}}},
                     {'$sort': {'c': -1}}, {'$limit': int(top_n)}]
-        facets = {'count': [{'$count': 'n'}], 'p': grp('p'), 'u': grp('u')}
+        def has(f):   # 1 when field f is present on the doc, else 0
+            return {'$cond': [{'$ne': [{'$type': f'${f}'}, 'missing']}, 1, 0]}
+        facets = {
+            'count': [{'$count': 'n'}],
+            'p': grp('p'), 'u': grp('u'),
+            # coverage + login-type split, same single pass (investigator context:
+            # "what share of this zone's accounts expose a plaintext password / a
+            # breached service / a hash", and how the accounts identify their owner)
+            'cov': [{'$group': {'_id': None,
+                                'with_password': {'$sum': has('p')},
+                                'with_service': {'$sum': has('v')},
+                                'with_hash': {'$sum': has('h')},
+                                'email': {'$sum': has('e')},
+                                'username': {'$sum': has('u')},
+                                'phone': {'$sum': has('t')}}}],
+        }
         if target != 'service':
             facets['v'] = grp('v')
         total, passwords, usernames, services = None, [], [], []
+        coverage, login_types = {}, {}
         try:
             res = next(coll.aggregate([{'$match': match}, {'$facet': facets}],
                                       maxTimeMS=max_ms, allowDiskUse=True), {})
@@ -618,6 +634,10 @@ class DB():
             passwords = unpack('p')
             usernames = unpack('u')
             services = unpack('v', reverse=True) if target != 'service' else []
+            cov = (res.get('cov') or [{}])[0]
+            coverage = {k: int(cov.get(k, 0) or 0)
+                        for k in ('with_password', 'with_service', 'with_hash')}
+            login_types = {k: int(cov.get(k, 0) or 0) for k in ('email', 'username', 'phone')}
         except pymongo.errors.PyMongoError as e:
             log.warning(f'tld_detail aggregation for .{zone}: {e}')
 
@@ -635,6 +655,7 @@ class DB():
 
         return {
             'zone': zone, 'target': target, 'total_accounts': total,
+            'coverage': coverage, 'login_types': login_types,
             'top_domains': domains, 'top_passwords': passwords,
             'top_services': services, 'top_usernames': usernames,
             'sample': samples,

@@ -304,6 +304,8 @@ function offlineTld(zone, target){
   const recs=SAMPLE_RECORDS.filter(inZone);
   const cnt=(f)=>{ const m={}; recs.forEach(r=>{const k=f(r); if(k) m[k]=(m[k]||0)+1;}); return Object.entries(m).sort((a,b)=>b[1]-a[1]); };
   return {zone:z, target, total_accounts:recs.length,
+    coverage:{with_password:recs.filter(r=>r.p).length, with_service:recs.filter(r=>r.v).length, with_hash:recs.filter(r=>r.h&&r.h.length).length},
+    login_types:{email:recs.filter(r=>r.e).length, username:recs.filter(r=>r.u).length, phone:recs.filter(r=>r.t).length},
     top_domains: target==='service'?[]:cnt(r=>r.e.split('@')[1]||''),
     top_passwords: cnt(r=>r.p), top_services: target==='service'?[]:cnt(r=>r.v),
     top_usernames: cnt(r=>r.u), sample:recs.slice(0,25), demo:true};
@@ -669,7 +671,16 @@ function renderTldModal(d){
     `<div class="card"><h3>Breached services</h3><p class="note">Platforms these accounts were seen on.</p><div id="tSvc"></div></div>`;
   const domCard = target==='service' ? '' :
     `<div class="card"><h3>Domains in .${esc(zone)}</h3><p class="note">Email domains under this zone.</p><div id="tDom"></div></div>`;
-  body.innerHTML = `
+  // per-zone threat-landscape tiles (coverage + login identity), from the same aggregation
+  const cov=d.coverage||{}, lt=d.login_types||{}, tot=total||0, zp=n=>tot?Math.round(100*n/tot):0;
+  const tiles = `<div class="mini">
+    <div class="m"><div class="k">Accounts</div><div class="v tnum">${fmt(tot)}</div></div>
+    <div class="m"><div class="k">With password</div><div class="v tnum">${fmt(cov.with_password||0)}</div><div class="k">${zp(cov.with_password||0)}% plaintext</div></div>
+    <div class="m"><div class="k">With breached service</div><div class="v tnum">${fmt(cov.with_service||0)}</div><div class="k">${zp(cov.with_service||0)}% of records</div></div>
+    <div class="m"><div class="k">With hash</div><div class="v tnum">${fmt(cov.with_hash||0)}</div></div>
+    <div class="m"><div class="k">Email / User / Phone</div><div class="v tnum" style="font-size:16px">${fmt(lt.email||0)} / ${fmt(lt.username||0)} / ${fmt(lt.phone||0)}</div></div>
+  </div>`;
+  body.innerHTML = tiles + `
     <section class="grid">
       ${domCard}
       <div class="card"><h3>Passwords</h3><p class="note">Most used by accounts in this zone (popular → rare).</p><div id="tPw"></div></div>
