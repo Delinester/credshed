@@ -62,14 +62,18 @@ def _flush_once(coll, docs, source_id):
     One insert_many(unordered) + duplicate-key provenance merge (an _id collision
     means the account already exists — add this source to its `s` array).  Raises
     PyMongoError on a transient failure so the caller can bound its retries.
+    Returns the number of NEW (actually inserted) documents, so the caller can
+    report unique_accounts.
     '''
     if not docs:
-        return
+        return 0
     try:
         coll.insert_many(docs, ordered=False)
+        return len(docs)
     except pymongo.errors.BulkWriteError as bwe:
+        errs = bwe.details.get('writeErrors', [])
         dup_ids, other = [], 0
-        for e in bwe.details.get('writeErrors', []):
+        for e in errs:
             if e.get('code') == 11000:
                 _id = (e.get('op') or {}).get('_id')
                 if _id is not None:
@@ -82,9 +86,10 @@ def _flush_once(coll, docs, source_id):
             coll.bulk_write(
                 [pymongo.UpdateOne({'_id': _id}, {'$addToSet': {'s': source_id}})
                  for _id in dup_ids], ordered=False)
+        return max(0, len(docs) - len(errs))   # inserted = batch minus every write error
 
 
-def _writer_thread(coll, source_id, work_q, fail):
+def _writer_thread(coll, source_id, work_q, fail, inserted, idx):
     '''
     Drains batches from an in-process queue and writes them to Mongo, overlapping
     the round-trip with parsing.  Retries a transient Mongo error but only until a
@@ -92,7 +97,8 @@ def _writer_thread(coll, source_id, work_q, fail):
     not per-batch) — then it sets the shared `fail` flag and drops the batch so the
     worker reports the import as partial rather than the parent hanging forever.
     A None sentinel ends the thread; it keeps draining so the parser's put() never
-    blocks permanently.
+    blocks permanently.  `inserted` accumulates the count of new (non-duplicate)
+    documents written, for unique_accounts reporting.
     '''
     deadline = None
     while True:
@@ -101,7 +107,7 @@ def _writer_thread(coll, source_id, work_q, fail):
             return
         while True:
             try:
-                _flush_once(coll, batch, source_id)
+                inserted[idx] += _flush_once(coll, batch, source_id)   # own slot: no cross-thread race
                 deadline = None
                 break
             except pymongo.errors.PyMongoError as e:
@@ -147,6 +153,8 @@ def _pool_worker(idx, path, encoding, presniff, source_id, batch_size,
     stats = Source(path)      # stats accumulator across all this worker's ranges
     ok = True
     fail = [False]            # set by a writer thread if it ever drops a batch
+    nwt = max(1, write_threads)
+    inserted = [0] * nwt      # one slot PER writer thread (avoids a lost-update += race)
     client = None
     writers = []
     work_q = queue.Queue(maxsize=max(1, queue_depth))
@@ -158,8 +166,8 @@ def _pool_worker(idx, path, encoding, presniff, source_id, batch_size,
             write_concern=pymongo.write_concern.WriteConcern(w=1))
 
         writers = [threading.Thread(target=_writer_thread,
-                                    args=(coll, source_id, work_q, fail), daemon=True)
-                   for _ in range(max(1, write_threads))]
+                                    args=(coll, source_id, work_q, fail, inserted, _wi), daemon=True)
+                   for _wi in range(nwt)]
         for w in writers:
             w.start()
 
@@ -209,13 +217,14 @@ def _pool_worker(idx, path, encoding, presniff, source_id, batch_size,
                 pass
         if fail[0]:
             ok = False
-        result_q.put(_serialize_stats(stats, ok))
+        result_q.put(_serialize_stats(stats, ok, sum(inserted)))
 
 
-def _serialize_stats(s, ok=True):
+def _serialize_stats(s, ok=True, unique=0):
     '''partial per-source stats, trimmed for cheap IPC back to the parent'''
     return {
         'ok': bool(ok),
+        'unique': int(unique),
         'total_accounts': s.total_accounts,
         'login_types': dict(s.login_types),
         'phone_count': s.phone_count,
@@ -238,6 +247,7 @@ def merge_stats_into_source(source, partials):
     final add_source() writes histograms identical to a single-threaded parse.'''
     for r in partials:
         source.total_accounts += r['total_accounts']
+        source.unique_accounts += r.get('unique', 0)
         for k in ('email', 'username', 'phone'):
             source.login_types[k] = source.login_types.get(k, 0) + r['login_types'].get(k, 0)
         source.phone_count += r['phone_count']

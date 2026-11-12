@@ -743,8 +743,9 @@ class DB():
         import_start = datetime.now()
         last_log = import_start
 
+        source.unique_accounts = 0
         for batch in account_stream:
-            self._write_batch(accounts_collection, batch, source.id)
+            source.unique_accounts += self._write_batch(accounts_collection, batch, source.id)
             now = datetime.now()
             if (now - last_log).total_seconds() >= 2:
                 self._log_progress(source, import_start, total_size)
@@ -823,16 +824,18 @@ class DB():
         Insert a batch of account documents (unordered).  _id collisions mean the
         account already exists (same or another source) — merge this source into
         their `s` array so provenance is preserved.  Retries transient errors.
+        Returns the number of NEW (actually inserted) documents (for unique_accounts).
         '''
         if not docs:
-            return
+            return 0
         while True:
             try:
                 coll.insert_many(docs, ordered=False)
-                return
+                return len(docs)
             except pymongo.errors.BulkWriteError as bwe:
+                errs = bwe.details.get('writeErrors', [])
                 dup_ids, other = [], 0
-                for e in bwe.details.get('writeErrors', []):
+                for e in errs:
                     if e.get('code') == 11000:          # duplicate key
                         _id = (e.get('op') or {}).get('_id')
                         if _id is not None:
@@ -847,7 +850,7 @@ class DB():
                         [pymongo.UpdateOne({'_id': _id}, {'$addToSet': {'s': source_id}}) for _id in dup_ids],
                         ordered=False
                     )
-                return
+                return max(0, len(docs) - len(errs))
             except pymongo.errors.PyMongoError as e:
                 log.error('Encountered error in insert_many; retrying in 30 seconds...')
                 log.error(error_detail(e))
