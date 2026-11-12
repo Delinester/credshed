@@ -253,6 +253,8 @@ class Account():
     @property
     def formatted_hashes(self):
 
+        if not self.hashes:          # fast path: most accounts have no hash
+            return ''
         hashes = list(set(self.hashes))
         hashes.sort(key=lambda x: len(x))
         return '|'.join(hashes)

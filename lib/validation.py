@@ -207,6 +207,9 @@ def is_url_like(s):
     return bool(host) and ('.' in host) and not host.replace('.', '').isdigit()
 
 
+_host_cache = {}
+_HOST_CACHE_CAP = 100000
+
 def extract_host(s):
     '''
     Extract a normalized hostname from a URL-ish service field.
@@ -214,9 +217,17 @@ def extract_host(s):
     e.g. "https://www.Example.com:443/login?x=1" -> "example.com"
          "com.instagram.android"                 -> "com.instagram.android"
          "github.com/session"                    -> "github.com"
+
+    Memoized: a ULP row extracts the host up to twice (is_url_like + Account) and
+    popular services recur, so a bounded cache turns most calls into a dict hit.
+    Pure -> the cache can never change a result.
     '''
     if not s:
         return ''
+    cached = _host_cache.get(s)
+    if cached is not None:
+        return cached
+    raw = s
     s = control_chars_re.sub('', s.strip().lower())
     s = url_scheme_regex.sub('', s)
     # userinfo@host -> host (rare in service fields, but be safe)
@@ -229,7 +240,10 @@ def extract_host(s):
     # strip leading www.
     if s.startswith('www.'):
         s = s[4:]
-    return s.strip('.')
+    result = s.strip('.')
+    if raw and len(_host_cache) < _HOST_CACHE_CAP:
+        _host_cache[raw] = result
+    return result
 
 
 # small bounded memo: during ingest tld_of() is called once per account on the

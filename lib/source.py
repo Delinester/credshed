@@ -145,8 +145,8 @@ class Source():
         self.total_accounts += 1
 
         if account.domain:
-            self._tally(self.domains, account.domain)
-            self._tally(self.email_tlds, validation.tld_of(account.domain))
+            self.domains.bump(account.domain)
+            self.email_tlds.bump(validation.tld_of(account.domain))
             self.login_types['email'] += 1
         elif account.phone:
             self.login_types['phone'] += 1
@@ -156,8 +156,8 @@ class Source():
         # breached service (ULP "URL" field) + its zone
         if account.service:
             self.with_service += 1
-            self._tally(self.services, account.service)
-            self._tally(self.service_tlds, validation.tld_of(account.service))
+            self.services.bump(account.service)
+            self.service_tlds.bump(validation.tld_of(account.service))
 
         if account.phone:
             self.phone_count += 1
