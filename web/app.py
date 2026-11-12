@@ -178,8 +178,13 @@ async def api_combined(request: Request):
         body = await request.json()
     except Exception:
         return JSONResponse({'error': 'invalid JSON body'}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({'error': 'body must be a JSON object'}, status_code=400)
     conditions = body.get('conditions') or []
-    n = int(body.get('limit', 100) or 100)
+    try:
+        n = int(body.get('limit', 100) or 100)
+    except (TypeError, ValueError):
+        n = 100
     limit = SEARCH_MAX if n <= 0 else max(1, min(n, SEARCH_MAX))
     max_ms = min(30000, max(10000, limit * 2))
     try:
@@ -200,9 +205,14 @@ async def api_bulk(request: Request):
         body = await request.json()
     except Exception:
         return JSONResponse({'error': 'invalid JSON body'}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({'error': 'body must be a JSON object'}, status_code=400)
     qtype = body.get('type', 'auto')
     values = body.get('values') or []
-    per_value = max(1, min(int(body.get('per_value', 50) or 50), 500))
+    try:
+        per_value = max(1, min(int(body.get('per_value', 50) or 50), 500))
+    except (TypeError, ValueError):
+        per_value = 50
     try:
         data = credshed().db.bulk_lookup(qtype, values, per_value=per_value)
         return JSONResponse(data)

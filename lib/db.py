@@ -26,6 +26,16 @@ log = logging.getLogger('credshed.db')
 source_lock = Manager().Semaphore()
 
 
+def _require_contains(kw):
+    '''A "contains" (substring) term scans a whole secondary index; require a few
+    chars so a 1-2 char term (or an empty one) can't drag a 34M-key scan to the time
+    limit, and so an empty-normalising term can't become a match-all {"$regex": ""}.'''
+    if not kw:
+        raise CredShedError('Empty search term')
+    if len(kw) < 3:
+        raise CredShedError('A "contains" search needs at least 3 characters')
+
+
 class DB():
 
 
@@ -248,19 +258,21 @@ class DB():
                 raise CredShedError('Invalid email')
 
         elif query_type == 'domain':
-            domain = keyword.lower()
-            domain = re.escape(domain[::-1])
-
-            if domain.endswith('.'):
-                # if query is like ".com".  [^|]* (everything up to the _id's '|'
-                # separator) is Unicode-safe — MongoDB's \w is ASCII-only, which both
-                # missed hyphenated subdomains AND zero-matched IDN domains (e.g. .рф).
-                query_regex = rf'^{domain}[^|]*\|'
+            kw = keyword.strip().lower()
+            if kw.startswith('.'):
+                # ".kz" is a domain-ZONE query (same as tld): emit the tight reversed-
+                # zone prefix ^<rev>\. — a bounded _id-index scan — NOT <rev>[^|]*\|,
+                # which the planner ran as an unbounded scan to the time limit.  It is
+                # Unicode-safe (no \w) so IDN zones and hyphenated subdomains still match.
+                zone = kw.lstrip('.')
+                if not zone:
+                    raise CredShedError('Invalid domain zone (empty)')
+                rev = re.escape(zone[::-1])
+                query = {'_id': {'$regex': rf'^{rev}\.'}}
             else:
-                # or if query is like "example.com"
-                query_regex = rf'^{domain}[\.\|]'
-
-            query = {'_id': {'$regex': query_regex}}
+                # "example.com" -> the domain itself OR any subdomain of it
+                domain = re.escape(kw[::-1])
+                query = {'_id': {'$regex': rf'^{domain}[\.\|]'}}
 
         elif query_type == 'tld':
             # domain-zone search on the EMAIL domain (victim geography), e.g. ".ru"
@@ -278,6 +290,7 @@ class DB():
             # the phone field, so match either for numeric pivots.
             kw = validation.clean_utf(keyword).strip().translate(Account.strip_from_username)[:Account.max_length_1]
             if contains:
+                _require_contains(kw)
                 query = {'u': {'$regex': re.escape(kw), '$options': 'i'}}
             elif kw.isdigit():
                 query = {'$or': [{'u': kw}, {'t': kw}]}
@@ -287,7 +300,11 @@ class DB():
         elif query_type == 'password':
             # reverse search: "who used this password?" — normalise like ingest
             kw = validation.clean_utf(keyword)[:Account.max_length_1]
-            query = {'p': {'$regex': re.escape(kw), '$options': 'i'}} if contains else {'p': kw}
+            if contains:
+                _require_contains(kw)
+                query = {'p': {'$regex': re.escape(kw), '$options': 'i'}}
+            else:
+                query = {'p': kw}
 
         elif query_type == 'misc':
             # search the misc / context field (victim names, notes, IPs) — the only
@@ -773,12 +790,17 @@ class DB():
         -> accounts whose email domain is gmail.com AND who were breached on roblox.com.
         Returns the same shape as search_records.
         '''
-        conds = [c for c in (conditions or []) if str(c.get('value', '')).strip()]
+        if not isinstance(conditions, list):
+            raise CredShedError('conditions must be a list of {type, value}')
+        conds = [c for c in conditions if isinstance(c, dict) and str(c.get('value', '')).strip()]
         if not conds:
             raise CredShedError('No search conditions given')
         if len(conds) > 8:
             raise CredShedError('Too many conditions (max 8)')
-        subqueries = [self._build_query(str(c['value']), c.get('type', 'auto'), mode=c.get('mode', 'exact'))
+        # str()-coerce type/value so a non-string (e.g. an injected {"$ne":1}) is rejected
+        # as an unknown type by validate_query_type rather than crashing on .strip()
+        subqueries = [self._build_query(str(c['value']), str(c.get('type', 'auto')),
+                                        mode=str(c.get('mode', 'exact')))
                       for c in conds]
         query = subqueries[0] if len(subqueries) == 1 else {'$and': subqueries}
         lim = max(1, int(limit))
@@ -805,8 +827,11 @@ class DB():
         report, per value, how many records matched plus a few sample records.  Each
         lookup is index-backed, so a capped batch returns quickly.
         '''
+        query_type = str(query_type)
+        if not isinstance(values, (list, tuple)):
+            raise CredShedError('values must be a list')
         seen, cleaned = set(), []
-        for v in values or []:
+        for v in values:
             v = str(v).strip()
             if v and v.lower() not in seen:
                 seen.add(v.lower())

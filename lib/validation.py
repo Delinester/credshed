@@ -204,6 +204,19 @@ def normalize_phone(s):
     if not s:
         return ''
     s = s.strip()
+    # fold non-ASCII decimal digits (Arabic-Indic ٠-٩, Devanagari, …) to ASCII so a
+    # phone written in another script normalises to the same bare-digit string
+    if not s.isascii():
+        folded = []
+        for c in s:
+            if c.isascii():
+                folded.append(c)
+            else:
+                try:
+                    folded.append(str(unicodedata.digit(c)))
+                except (TypeError, ValueError):
+                    folded.append(c)   # not a digit -> leave it for phone_strip_regex
+        s = ''.join(folded)
     digits = phone_strip_regex.sub('', s).lstrip('+')
     if 7 <= len(digits) <= 15:
         return digits

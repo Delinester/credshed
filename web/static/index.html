@@ -204,7 +204,7 @@
       </div>
       <textarea id="bulkValues" placeholder="jdoe@example.com&#10;admin@acme.com&#10;…" spellcheck="false"></textarea>
     </div>
-    <p class="hint" id="searchHint">Query any field (password / username / hash / phone / service / <b>name</b> are exact or <b>contains</b>; email, domain and TLD understand prefixes). <b>+ AND</b> stacks conditions on one account · <b>Bulk</b> checks a whole list · press <kbd>/</kbd> to focus · click any value to <b>pivot</b> · export to CSV/JSON.</p>
+    <p class="hint" id="searchHint">Query any field (email / domain / TLD understand prefixes; hash / phone / service are exact; <b>password / username / name</b> can be exact or <b>contains</b>). <b>+ AND</b> stacks conditions on one account · <b>Bulk</b> checks a whole list · press <kbd>/</kbd> to focus · click any value to <b>pivot</b> · export to CSV/JSON.</p>
     <div class="resultbox" id="results" hidden></div>
   </section>
 
@@ -691,9 +691,10 @@ function addAndRow(){
 }
 
 async function runSearch(){
-  const limit=$('#qLimit').value, contains=$('#qContains').checked;
-  const conds=gatherConditions();
+  const limit=$('#qLimit').value;
+  const conds=gatherConditions();   // primary (if filled) + any AND rows with a value
   const box=$('#results'); box.hidden=false;
+  if(conds.length===0){ box.innerHTML='<p class="hint warn">Enter a search term (or a condition).</p>'; return; }
   if(conds.length>=2){   // boolean AND across conditions
     if(!LIVE){ box.innerHTML='<p class="hint warn">Combined (AND) search needs the live backend.</p>'; return; }
     box.innerHTML='<p class="hint">Searching…</p>';
@@ -704,8 +705,8 @@ async function runSearch(){
     }catch(e){ box.innerHTML=`<p class="hint err">Search failed: ${esc(e.message)}</p>`; }
     return;
   }
-  const q=$('#qText').value.trim(); if(!q) return;
-  const type=$('#qType').value;
+  // single condition — taken from the first non-empty field (primary box or a lone AND row)
+  const c=conds[0], type=c.type, q=c.value, contains=(c.mode==='contains');
   if(!LIVE){ const lim=parseInt(limit,10); renderRecords(offlineSearch(type, q, lim>0?lim:100000)); return; }  // "All" (0) -> all samples
   box.innerHTML='<p class="hint">Searching…</p>';
   try{
