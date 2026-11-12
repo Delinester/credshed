@@ -251,7 +251,8 @@
       <th class="num">Accounts</th><th class="num">Email</th><th class="num">Username</th>
       <th class="num">Phone</th><th class="num">w/ password</th><th></th>
     </tr></thead><tbody></tbody></table>
-    <p class="note" style="padding:4px 10px 8px; margin:0">Select a dataset for its detailed breakdown.</p>
+    <button id="srcMore" class="more" style="margin:2px 0 6px" hidden></button>
+    <p class="note" style="padding:4px 10px 8px; margin:0">Largest datasets first — select one for its detailed breakdown.</p>
   </section>
 
   <footer>Authorised DFIR use only — internal, access-controlled network. Records and credentials are shown for investigation.<span id="asof"></span></footer>
@@ -307,7 +308,7 @@ function offlineTld(zone, target){
     coverage:{with_password:recs.filter(r=>r.p).length, with_service:recs.filter(r=>r.v).length, with_hash:recs.filter(r=>r.h&&r.h.length).length},
     login_types:{email:recs.filter(r=>r.e).length, username:recs.filter(r=>r.u).length, phone:recs.filter(r=>r.t).length},
     top_domains: target==='service'?[]:cnt(r=>r.e.split('@')[1]||''),
-    top_passwords: cnt(r=>r.p), top_services: target==='service'?[]:cnt(r=>r.v),
+    top_passwords: cnt(r=>r.p), top_services: cnt(r=>r.v),
     top_usernames: cnt(r=>r.u), sample:recs.slice(0,25), demo:true};
 }
 
@@ -415,19 +416,26 @@ function render(d){
   if(pil){ pil.style.display=hasPw?'':'none';
     if(pil.previousElementSibling) pil.previousElementSibling.style.display=hasPw?'':'none';
     if(hasPw){ expandable($('#topPwActual'), {metric:'pwactual', color:'var(--s2)'});
-      barList($('#pwLen'), (d.password_lengths||[]).map(x=>[x[0]+' chars', x[1]]), {}); } }
+      expandable($('#pwLen'), {items:(d.password_lengths||[]).map(x=>[x[0]+' chars', x[1]]), color:'var(--s1)', top:16}); } }
 
   const geo = window.__geo||'email';
   drawGeo(geo);
   document.querySelectorAll('#geoToggle button').forEach(b=>b.onclick=()=>{window.__geo=b.dataset.t; drawGeo(b.dataset.t);});
 
-  $('#sources tbody').innerHTML = d.sources.map(s=>`<tr class="clickable" data-sid="${s.source_id}" title="View detailed statistics">
+  // Sources: largest datasets first, collapsed to the top 12 with a Show-all toggle
+  const SRCN=12, srcSorted=[...d.sources].sort((a,b)=>(b.total_accounts||0)-(a.total_accounts||0));
+  $('#sources tbody').innerHTML = srcSorted.map((s,i)=>`<tr class="clickable${i>=SRCN?' srcx':''}"${i>=SRCN?' hidden':''} data-sid="${s.source_id}" title="View detailed statistics">
     <td class="tnum">${s.source_id??'?'}</td><td title="${esc(s.name)}">${esc(String(s.name).split('/').pop())}</td>
     <td><span class="fmt">${esc(s.parser_format||'?')}</span></td>
     <td class="num tnum">${fmt(s.total_accounts)}</td><td class="num tnum">${fmt(s.login_types.email)}</td>
     <td class="num tnum">${fmt(s.login_types.username)}</td><td class="num tnum">${fmt(s.login_types.phone)}</td>
     <td class="num tnum">${fmt(s.with_password)}</td><td class="viewcell">View ›</td></tr>`).join('');
   $('#sources tbody').querySelectorAll('tr.clickable').forEach(tr=>tr.onclick=()=>openSourceDetail(tr.dataset.sid));
+  const srcMore=$('#srcMore');
+  if(srcSorted.length>SRCN){ srcMore.hidden=false; let srcOpen=false;
+    const lbl=()=>srcMore.textContent = srcOpen?'Show fewer ▴':`Show all ${srcSorted.length} sources ▾`; lbl();
+    srcMore.onclick=()=>{ srcOpen=!srcOpen; document.querySelectorAll('#sources tbody tr.srcx').forEach(tr=>tr.hidden=!srcOpen); lbl(); };
+  } else srcMore.hidden=true;
 }
 
 function drawGeo(target){
@@ -442,7 +450,7 @@ function drawGeo(target){
 
 // ---- per-dataset detail modal -----------------------------------------------
 function sTile(k,v,x,c){ return `<div class="tile"><div class="k"><span class="swatch" style="background:${c}"></span>${k}</div><div class="v tnum">${v}</div><div class="x">${esc(x)}</div></div>`; }
-function dList(mount, items, color){ expandable(mount, {items: items||[], color, top:12}); }
+function dList(mount, items, color, drill){ expandable(mount, {items: items||[], color, top:12, drill}); }
 function closeModal(){ document.querySelector('.modal-backdrop')?.remove(); document.body.style.overflow=''; }
 
 function renderDetailModal(d){
@@ -594,12 +602,15 @@ async function download(name, text, type){
     const a=document.createElement('a'); a.href=u; a.download=name; document.body.appendChild(a); a.click();
     a.remove(); setTimeout(()=>URL.revokeObjectURL(u),1000); }catch(e){}
 }
-document.addEventListener('click', e=>{
-  const el=e.target.closest('.pivot'); if(!el) return;
-  e.preventDefault(); closeModal();
-  $('#qType').value=el.dataset.pt; $('#qText').value=el.dataset.pv;
+function pivotTo(pt, pv){
+  closeModal();
+  $('#qType').value=pt; $('#qText').value=String(pv);
   window.scrollTo({top:0, behavior:'smooth'});
   runSearch();
+}
+document.addEventListener('click', e=>{
+  const el=e.target.closest('.pivot'); if(!el) return;
+  e.preventDefault(); pivotTo(el.dataset.pt, el.dataset.pv);
 });
 
 function renderRecords(d){
@@ -667,8 +678,11 @@ function renderTldModal(d){
     `<span>${total==null?'—':fmt(total)} accounts</span><span>·</span>`+
     `<span>${fmt((d.top_domains||[]).length)} domains</span><span>·</span>`+
     `<span>${fmt((d.sample||[]).length)} sample records</span>`;
-  const svcCard = target==='service' ? '' :
-    `<div class="card"><h3>Breached services</h3><p class="note">Platforms these accounts were seen on.</p><div id="tSvc"></div></div>`;
+  const svcNote = target==='service'
+    ? `Services hosted in .${esc(zone)}, by account count — click one to view its compromised accounts.`
+    : `Platforms these accounts were breached on — click one to view its compromised accounts.`;
+  const svcTitle = target==='service' ? `Breached services in .${esc(zone)}` : 'Breached services';
+  const svcCard = `<div class="card"><h3>${svcTitle}</h3><p class="note">${svcNote}</p><div id="tSvc"></div></div>`;
   const domCard = target==='service' ? '' :
     `<div class="card"><h3>Domains in .${esc(zone)}</h3><p class="note">Email domains under this zone.</p><div id="tDom"></div></div>`;
   // per-zone threat-landscape tiles (coverage + login identity), from the same aggregation
@@ -691,8 +705,9 @@ function renderTldModal(d){
     <div class="resultbox">${recordsTableHTML(d.sample)}</div>`;
   if(target!=='service'){
     dList(back.querySelector('#tDom'), d.top_domains, 'var(--s1)');
-    dList(back.querySelector('#tSvc'), d.top_services, 'var(--s3)');
   }
+  // breached services — clickable: each opens the compromised accounts for that service
+  dList(back.querySelector('#tSvc'), d.top_services, 'var(--s3)', host => pivotTo('service', host));
   dList(back.querySelector('#tPw'), d.top_passwords, 'var(--s2)');
   dList(back.querySelector('#tUsr'), d.top_usernames, 'var(--s4)');
 }

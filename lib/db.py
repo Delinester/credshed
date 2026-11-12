@@ -603,6 +603,11 @@ class DB():
         facets = {
             'count': [{'$count': 'n'}],
             'p': grp('p'), 'u': grp('u'),
+            # per-service breakdown (group by the stored, reversed service host).
+            # For target='service' this lists the breached services hosted IN the
+            # zone (e.g. ".kz" -> companya.kz: 1566, sub.companyb.kz: 443); for
+            # target='email' it lists the services the zone's victims appear on.
+            'v': grp('v'),
             # coverage + login-type split, same single pass (investigator context:
             # "what share of this zone's accounts expose a plaintext password / a
             # breached service / a hash", and how the accounts identify their owner)
@@ -614,8 +619,6 @@ class DB():
                                 'username': {'$sum': has('u')},
                                 'phone': {'$sum': has('t')}}}],
         }
-        if target != 'service':
-            facets['v'] = grp('v')
         total, passwords, usernames, services = None, [], [], []
         coverage, login_types = {}, {}
         try:
@@ -633,7 +636,7 @@ class DB():
             total = int(cnt[0]['n']) if cnt else 0
             passwords = unpack('p')
             usernames = unpack('u')
-            services = unpack('v', reverse=True) if target != 'service' else []
+            services = unpack('v', reverse=True)
             cov = (res.get('cov') or [{}])[0]
             coverage = {k: int(cov.get(k, 0) or 0)
                         for k in ('with_password', 'with_service', 'with_hash')}
