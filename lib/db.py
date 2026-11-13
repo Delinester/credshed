@@ -368,22 +368,31 @@ class DB():
 
     def build_indexes(self, fields=None):
         '''
-        Build secondary indexes for the given doc-field keys (default: all of
-        u/p/t/v).  Returns the list of fields indexed.  Sparse, because most
-        docs only populate a subset of these.
+        Build the given secondary indexes (default u/p/t/v/h/m) in a SINGLE collection
+        scan.  MongoDB builds every index named in one createIndexes command from one
+        pass over the collection, so building all of them together is ~Nx less I/O than
+        create_index-per-field (which re-scans all 580M docs for each index) — the
+        single biggest lever on rebuild time, and what the post-ingest --reindex rebuild
+        now uses.  Sparse, because most docs populate only a subset of these fields.
         '''
         if fields is None:
             fields = list(self.SECONDARY_INDEX_FIELDS)
-        built = []
-        for f in fields:
-            name = f'idx_{f}'
-            log.info(f'Building index "{name}" on accounts.{f} '
-                     f'({self.SECONDARY_INDEX_FIELDS.get(f, f)}) ...')
-            self._op(self.accounts.create_index, [(f, pymongo.ASCENDING)],
-                     name=name, sparse=True)
-            built.append(f)
-        log.info(f'Built {len(built)} index(es): {built}')
-        return built
+        fields = list(fields)
+        if not fields:
+            return []
+        # Give the build more RAM for its in-memory key sort so it spills to disk less
+        # (faster).  Best-effort: needs admin, harmless and skipped if not permitted.
+        try:
+            self.client.admin.command('setParameter', 1, maxIndexBuildMemoryUsageMegabytes=2048)
+        except Exception as e:
+            log.debug(f'could not raise index-build memory: {e}')
+        models = [pymongo.IndexModel([(f, pymongo.ASCENDING)], name=f'idx_{f}', sparse=True)
+                  for f in fields]
+        names = [f'idx_{f}' for f in fields]
+        log.info(f'Building {len(models)} index(es) in ONE collection scan: {names} ...')
+        self._op(self.accounts.create_indexes, models)
+        log.info(f'Built {len(fields)} index(es): {fields}')
+        return fields
 
     def ensure_indexes(self):
         '''
