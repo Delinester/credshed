@@ -237,7 +237,14 @@
           <button data-t="service" aria-pressed="false">Platform (service)</button>
         </div>
       </div>
-      <div class="grid" style="margin-top:4px; gap:16px">
+      <div style="display:flex; gap:8px; margin:10px 0 2px; flex-wrap:wrap; align-items:center">
+        <input id="geoQ" type="search" autocomplete="off" list="geoQList" spellcheck="false"
+               placeholder="Full statistics for a TLD zone or country — e.g. .uz, co.uk, Uzbekistan"
+               style="flex:1; min-width:220px; padding:8px 11px; border:1px solid var(--border); border-radius:8px; background:var(--surface-2); color:var(--ink); font:inherit">
+        <datalist id="geoQList"></datalist>
+        <button id="geoQBtn">View full stats ›</button>
+      </div>
+      <div class="grid" style="margin-top:8px; gap:16px">
         <div><div class="note" style="margin:0 0 6px">By region</div><div id="geoRegions"></div></div>
         <div><div class="note" style="margin:0 0 6px">By country</div><div id="geoCountries"></div></div>
         <div><div class="note" style="margin:0 0 6px">By TLD zone</div><div id="geoZones"></div></div>
@@ -455,6 +462,18 @@ function render(d){
   drawGeo(geo);
   document.querySelectorAll('#geoToggle button').forEach(b=>b.onclick=()=>{window.__geo=b.dataset.t; drawGeo(b.dataset.t);});
 
+  // "full statistics" query box — type a TLD zone or a country name, get its full drill-down
+  (function(){
+    const q=$('#geoQ'), btn=$('#geoQBtn'), dl=$('#geoQList'); if(!q) return;
+    const names=new Set();
+    ['regions_email','regions_service'].forEach(k=>{ const r=d[k]||{};
+      (r.countries||[]).forEach(c=>names.add(Array.isArray(c)?c[0]:c));
+      (r.zones||[]).forEach(z=>names.add('.'+(Array.isArray(z)?z[0]:z))); });
+    dl.innerHTML=[...names].slice(0,800).map(n=>`<option value="${esc(n)}">`).join('');
+    const go=()=>{ const v=q.value.trim(); if(v) openTldDetail(v.replace(/^\.+/,''), window.__geo||'email'); };
+    btn.onclick=go; q.onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); go(); } };
+  })();
+
   // Sources: largest datasets first, collapsed to the top 12 with a Show-all toggle
   const SRCN=12, srcSorted=[...d.sources].sort((a,b)=>(b.total_accounts||0)-(a.total_accounts||0));
   $('#sources tbody').innerHTML = srcSorted.map((s,i)=>`<tr class="clickable${i>=SRCN?' srcx':''}"${i>=SRCN?' hidden':''} data-sid="${s.source_id}" title="View detailed statistics">
@@ -476,7 +495,7 @@ function drawGeo(target){
     ? 'By breached-service domain zone — geography of the affected platforms.'
     : 'By email-domain zone — a proxy for victim geography.';
   expandable($('#geoRegions'), {metric:'regions', target});   // regions are roll-ups, no single zone to drill
-  expandable($('#geoCountries'), {metric:'countries', target, drill: c=>{ const z=countryZone(c,target); if(z) openTldDetail(z, target); }});
+  expandable($('#geoCountries'), {metric:'countries', target, drill: c=>openTldDetail(c, target)});
   expandable($('#geoZones'), {metric:'zones', target, drill: z=>openTldDetail(z, target)});
   document.querySelectorAll('#geoToggle button').forEach(b=>b.setAttribute('aria-pressed', b.dataset.t===target));
 }
@@ -564,7 +583,7 @@ function renderDetailModal(d){
       const r=(target==='service'?d.regions_service:d.regions_email)||{zones:[],countries:[],regions:[]};
       back.querySelector('#mGeoNote').textContent = target==='service' ? 'By breached-service domain zone.' : 'By email-domain zone — victim geography.';
       dList(back.querySelector('#mGeoRegions'), r.regions, 'var(--s3)');
-      dList(back.querySelector('#mGeoCountries'), r.countries, 'var(--s1)', c=>{ const z=(r.country_tld||{})[c]; if(z) openTldDetail(z, target); });
+      dList(back.querySelector('#mGeoCountries'), r.countries, 'var(--s1)', c=>openTldDetail(c, target));
       dList(back.querySelector('#mGeoZones'), r.zones, 'var(--s2)', z=>openTldDetail(z, target));
       back.querySelectorAll('#mGeoToggle button').forEach(b=>b.setAttribute('aria-pressed', b.dataset.t===target));
     };
@@ -770,10 +789,13 @@ async function openTldDetail(zone, target){
 function renderTldModal(d){
   removeModals();
   const zone=d.zone, target=d.target||'email';
+  const kind=d.kind||'zone';
+  const zlabel=kind==='country'?esc(zone):'.'+esc(zone);   // "France" (country) vs ".uz" (zone)
+  const ztype=kind==='country'?'country':'zone';
   const back=document.createElement('div'); back.className='modal-backdrop';
   back.innerHTML=`<div class="modal" role="dialog" aria-modal="true" aria-label="TLD detail">
     <div class="modal-head"><div style="min-width:0">
-      <h2>.${esc(zone)} <span style="color:var(--muted);font-size:12.5px;font-weight:400">${target==='service'?'breached-platform zone':'victim email zone'}</span></h2>
+      <h2>${zlabel} <span style="color:var(--muted);font-size:12.5px;font-weight:400">${target==='service'?'breached-platform '+ztype:'victim email '+ztype}</span></h2>
       <div class="meta" id="tldMeta"></div></div>
       <button class="xbtn" id="mClose">✕ Close</button></div>
     <div class="modal-body" id="tldBody"></div></div>`;
@@ -790,15 +812,20 @@ function renderTldModal(d){
     `<span title="${total==null?'':fmt(total)}">${total==null?'—':fmtK(total)} accounts</span><span>·</span>`+
     `<span>${fmt((d.top_domains||[]).length)} domains</span><span>·</span>`+
     `<span>${fmt((d.sample||[]).length)} sample records</span>`;
+  const svcComplete = target==='service' && d.complete;
   const svcNote = target==='service'
-    ? `Services hosted in .${esc(zone)}, by account count — click one to view its compromised accounts.`
+    ? `${svcComplete?'Every service':'Services'} hosted in ${zlabel}, by account count — click one to view its compromised accounts.`
     : `Platforms these accounts were breached on — click one to view its compromised accounts.`;
-  const svcTitle = target==='service' ? `Breached services in .${esc(zone)}` : 'Breached services';
+  const svcTitle = target==='service'
+    ? `Breached services in ${zlabel}${svcComplete?` · <span style="color:var(--muted);font-weight:400">all ${fmt((d.top_services||[]).length)}</span>`:''}`
+    : 'Breached services';
   const svcCard = `<div class="card"><h3>${svcTitle}</h3><p class="note">${svcNote}</p><div id="tSvc"></div></div>`;
-  const domTitle = target==='service' ? 'Victim email domains' : `Domains in .${esc(zone)}`;
+  const domComplete = target!=='service' && d.complete;
+  const domTitle = target==='service' ? 'Victim email domains'
+    : `Domains in ${zlabel}${domComplete?` · <span style="color:var(--muted);font-weight:400">all ${fmt((d.top_domains||[]).length)}</span>`:''}`;
   const domNote  = target==='service'
-    ? `Email domains of accounts breached on .${esc(zone)} services — click one to view its records.`
-    : `Every email domain under this zone, by compromised-account count — click one to view its records.`;
+    ? `Email domains of accounts breached on ${zlabel} services — click one to view its records.`
+    : `${domComplete?'Every':'Each'} email domain under ${zlabel}, by compromised-account count — click one to view its records.`;
   const domCard = `<div class="card"><h3>${domTitle}</h3><p class="note">${domNote}</p><div id="tDom"></div></div>`;
   // per-zone threat-landscape tiles (coverage + login identity), from the same aggregation
   const cov=d.coverage||{}, lt=d.login_types||{}, tot=total||0, zp=n=>tot?Math.round(100*n/tot):0;
@@ -810,11 +837,17 @@ function renderTldModal(d){
     <div class="m"><div class="k">With hash</div><div class="v tnum">${approx}${bigVal(cov.with_hash||0)}</div></div>
     <div class="m"><div class="k">Email / User / Phone</div><div class="v tnum" style="font-size:15px">${bigVal(lt.email||0)} / ${bigVal(lt.username||0)} / ${bigVal(lt.phone||0)}</div></div>
   </div>`;
+  const primWord = target==='service' ? 'services' : 'domains';
   const partialNote = d.partial
-    ? `<p class="hint warn" style="margin:0 0 12px">⚠ <b>.${esc(zone)}</b> is too large to roll up in real time, so the breakdown below is incomplete. Use the search box to look up specific domains, services or passwords in this zone.</p>`
-    : (est
-      ? `<p class="hint" style="margin:0 0 12px; color:var(--muted)">Account total and the ${target==='service'?'services':'domains'} breakdown are exact (precomputed); passwords, usernames, coverage and the identity split are <b>estimated from a ${fmt(d.sampled)}-record sample</b> of this zone (marked ≈). Open a specific domain/service/password for exact records.</p>`
-      : '');
+    ? `<p class="hint warn" style="margin:0 0 12px">⚠ <b>${zlabel}</b> is too large to roll up in real time, so the breakdown below is incomplete. Use the search box to look up specific domains, services or passwords.</p>`
+    : `<p class="hint" style="margin:0 0 12px; color:var(--muted)">`
+        + (d.complete
+            ? `The ${primWord} list is the <b>complete</b> set for ${zlabel} (exact counts). `
+            : `The ${primWord} breakdown is a precomputed + sampled estimate. `)
+        + (est
+            ? `Passwords, usernames, coverage and the identity split are <b>estimated from a ${fmt(d.sampled)}-record sample</b> (marked ≈); open a specific entity for exact records.`
+            : `Passwords, usernames and coverage are exact for this ${ztype}.`)
+        + `</p>`;
   body.innerHTML = partialNote + tiles + `
     <section class="grid">
       ${domCard}

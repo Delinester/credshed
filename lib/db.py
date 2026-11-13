@@ -700,9 +700,33 @@ class DB():
 
 
 
-    def tld_detail(self, zone, target='email', top_n=200, sample=30, max_ms=8000, sample_n=5000):
+    @staticmethod
+    def _resolve_region(query):
         '''
-        DFIR drill-down for ONE domain zone (e.g. ".kz").  SCALABLE at ANY DB size:
+        Map an investigator's query to (label, kind, zone_set).  `query` may be a TLD
+        zone ('uz', 'co.uk') OR a country name ('Uzbekistan', 'United Kingdom'):
+
+          * country name  -> ('United Kingdom', 'country', ['gb', 'uk'])  — every base
+            ccTLD that rolls up to that country, so the drill-down covers the WHOLE
+            country (all of .uk and .gb and their sub-zones), not just one zone.
+          * TLD zone       -> ('co.uk', 'zone', ['co.uk'])
+
+        A base ccTLD prefix match ('^ku\\.') catches every sub-zone (co.uk, gov.uk, …)
+        because they all reverse to 'ku.…', so the zone_set stays tiny and index-friendly.
+        '''
+        q = str(query).strip().lstrip('.')
+        cmap = {}
+        for cc, (country, _region) in regions.CCTLD.items():
+            cmap.setdefault(country.lower(), (country, []))[1].append(cc)
+        hit = cmap.get(q.lower())
+        if hit:
+            return (hit[0], 'country', sorted(set(hit[1])))
+        return (q.lower(), 'zone', [q.lower()])
+
+    def tld_detail(self, zone, target='email', top_n=200, sample=30, max_ms=8000, sample_n=5000, all_ms=12000):
+        '''
+        DFIR drill-down for ONE domain zone ('.kz') OR a whole COUNTRY ('Uzbekistan').
+        SCALABLE at ANY DB size:
 
           * zone account count + the primary breakdown (email domains for an email
             zone / breached services for a service zone) come from the PRECOMPUTED
@@ -720,27 +744,36 @@ class DB():
         target='service' -> breached-service geography (service host in the zone; 'v').
         '''
         from collections import Counter
-        zone = str(zone).strip().lower().lstrip('.')
-        # IDN-aware zone guard (accept .рф/.中国, reject regex metachars / injection)
-        if not zone or not re.match(rf'^[a-z0-9{validation._NON_ASCII}][a-z0-9.\-{validation._NON_ASCII}]{{0,23}}$', zone):
-            raise CredShedError(f'Invalid TLD zone: {zone!r}')
-        rev = re.escape(zone[::-1])
-        match = {'v': {'$regex': rf'^{rev}\.'}} if target == 'service' else {'_id': {'$regex': rf'^{rev}\.'}}
+        label, kind, zone_set = self._resolve_region(zone)
+        # IDN-aware guard on EACH zone (accept .рф/.中国, reject regex metachars / injection)
+        for z in zone_set:
+            if not z or not re.match(rf'^[a-z0-9{validation._NON_ASCII}][a-z0-9.\-{validation._NON_ASCII}]{{0,23}}$', z):
+                raise CredShedError(f'Invalid zone: {z!r}')
+        field = 'v' if target == 'service' else '_id'
+        clauses = [{field: {'$regex': rf'^{re.escape(z[::-1])}\.'}} for z in zone_set]
+        match = clauses[0] if len(clauses) == 1 else {'$or': clauses}   # country = union of its ccTLDs
         coll = self.accounts
         top_n, sample, sample_n = int(top_n), int(sample), int(sample_n)
 
-        # ---- 1. zone count + primary breakdown from precomputed per-source histograms ----
+        def in_region(tld):
+            # a histogram zone belongs to this query iff it IS, or is a sub-zone of, one
+            # of the target zones (so a country sums all of .uk, .co.uk, .gov.uk, …)
+            return bool(tld) and any(tld == z or tld.endswith('.' + z) for z in zone_set)
+
+        # ---- 1. account count + primary breakdown from precomputed per-source histograms ----
         tld_key = 'service_tld_hist' if target == 'service' else 'email_tld_hist'
         prim_key = 'top_services' if target == 'service' else 'top_domains'
         hist_total, primary = 0, {}
         try:
             for s in self.sources.find({}, {tld_key: 1, prim_key: 1}):
-                hist_total += int((self._unescape_keys(s.get(tld_key, {}) or {})).get(zone, 0) or 0)
+                for zk, zc in self._unescape_keys(s.get(tld_key, {}) or {}).items():
+                    if in_region(zk):
+                        hist_total += int(zc or 0)
                 for k, c in self._unescape_keys(s.get(prim_key, {}) or {}).items():
-                    if validation.tld_of(k) == zone:
+                    if in_region(validation.tld_of(k)):
                         primary[k] = primary.get(k, 0) + int(c)
         except pymongo.errors.PyMongoError as e:
-            log.warning(f'tld_detail histograms for .{zone}: {e}')
+            log.warning(f'tld_detail histograms for {label!r}: {e}')
         # ---- 2. secondary stats from a bounded, index-backed sample ----
         # From each sampled doc we collect BOTH the service host (field 'v') and the
         # email domain (the reversed _id prefix), un-reversed to their display form, so
@@ -793,20 +826,55 @@ class DB():
             return sorted(((k, int(round(c * scale))) for k, c in sample_counter.items()),
                           key=lambda x: x[1], reverse=True)[:top_n]
 
+        # For the PRIMARY breakdown we prefer an EXACT, COMPLETE index-backed group-up
+        # over the whole zone (every service / every domain, not a sample) so an
+        # investigator sees all affected services in a region.  It is bounded two ways
+        # so it stays fast: skipped for a zone bigger than COMPLETE_MAX accounts (a
+        # giant generic zone like .com, where a group-up would be too heavy and the
+        # histogram+sample estimate is used instead), and capped by max_time_ms as a
+        # safety net.  The ccTLD / country case this matters for is always well under
+        # the cap, so it runs in well under a second on an indexed field.
+        all_limit = 10000           # generous cap: covers every ccTLD/country completely
+        COMPLETE_MAX = 5_000_000    # skip the group-up for a zone bigger than this (use the estimate)
+
+        def complete_group(group_expr):
+            # returns (rows, exhaustive) or (None, False) on timeout.  exhaustive is
+            # False only when the zone has MORE distinct hosts than the cap (so the
+            # list is the top all_limit, not literally all) — true for every country.
+            try:
+                rows = list(coll.aggregate(
+                    [{'$match': match},
+                     {'$group': {'_id': group_expr, 'c': {'$sum': 1}}},
+                     {'$sort': {'c': -1}},
+                     {'$limit': int(all_limit) + 1}],
+                    maxTimeMS=int(all_ms), allowDiskUse=True))
+                out = [(d['_id'][::-1], int(d['c'])) for d in rows if d.get('_id')][:int(all_limit)]
+                return out, (len(rows) <= int(all_limit))
+            except pymongo.errors.PyMongoError:
+                return None, False   # too big / timed out -> caller falls back to the estimate
+
+        complete = False
         if target == 'service':
-            services = merge_primary(svc)   # services hosted IN the zone (histogram + sample tail)
-            domains = sample_list(dom)      # victim email domains (sampled)
+            g, complete = complete_group('$v') if 0 <= hist_total <= COMPLETE_MAX else (None, False)
+            services = g if g is not None else merge_primary(svc)     # services hosted IN the zone
+            domains = sample_list(dom)                                # victim email domains (sampled)
         else:
-            domains = merge_primary(dom)    # email domains IN the zone (histogram + sample tail)
-            services = sample_list(svc)     # services the victims use (sampled)
+            g, complete = (complete_group({'$arrayElemAt': [{'$split': ['$_id', '|']}, 0]})
+                           if 0 <= hist_total <= COMPLETE_MAX else (None, False))
+            domains = g if g is not None else merge_primary(dom)      # email domains IN the zone
+            services = sample_list(svc)                              # services the victims use (sampled)
 
         return {
-            'zone': zone, 'target': target, 'total_accounts': total,
+            'zone': label, 'kind': kind, 'target': target, 'total_accounts': total,
             'coverage': coverage, 'login_types': login_types,
             'top_domains': domains, 'top_passwords': passwords,
             'top_services': services, 'top_usernames': usernames,
             'sample': samples, 'partial': False,
             'estimated': estimated, 'sampled': n,
+            # True when the primary breakdown (services for a service zone / domains for
+            # an email zone) is the EXACT, exhaustive list for the zone rather than a
+            # histogram+sample estimate.
+            'complete': complete,
         }
 
     def search_records(self, keyword, query_type='auto', limit=100, max_time_ms=10000, mode='exact'):
