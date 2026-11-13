@@ -87,6 +87,9 @@ class CredShed():
     def build_indexes(self, fields=None):
         return self.db.build_indexes(fields)
 
+    def ensure_indexes(self):
+        return self.db.ensure_indexes()
+
     def drop_indexes(self):
         return self.db.drop_secondary_indexes()
 

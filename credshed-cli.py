@@ -463,6 +463,19 @@ def main(options):
 
             elif options.ingest:
                 credshed.import_files()
+                # DFIR scalability: after a bulk ingest, make sure the secondary
+                # search indexes exist (idempotent — only builds missing ones).
+                # Without this the DB silently grows un-indexed and every
+                # username/password/phone/service/hash lookup becomes a full
+                # collection scan that times out at scale.  Opt out with
+                # --no-auto-index (e.g. staging many files before one manual build).
+                if not getattr(options, 'preview', False) \
+                        and not getattr(options, 'no_auto_index', False) \
+                        and not options.drop_indexes:
+                    try:
+                        credshed.ensure_indexes()
+                    except Exception as e:
+                        log.error(f'auto index-build after ingest failed: {e}')
 
             elif options.delete_leak is not None:
                 credshed.delete_leak()
@@ -512,6 +525,7 @@ if __name__ == '__main__':
                                                                                         help='show domain-zone / regional statistics (email=victim geography [default], service=breached platform)')
     parser.add_argument('--build-indexes', nargs='*', metavar='FIELD',                  help='build secondary search indexes then exit (fields: u p t v; default all). Run after a bulk ingest.')
     parser.add_argument('--drop-indexes', action='store_true',                          help='drop secondary search indexes (faster bulk ingest)')
+    parser.add_argument('--no-auto-index', action='store_true',                          help='skip the automatic secondary-index build that normally runs after an ingest')
     parser.add_argument('--json', action='store_true',                                  help='output search results as JSON lines')
     parser.add_argument('--colons', action='store_true',                                help='output results in legacy colon format (email:user:pass:hash:misc:phone:service)')
     parser.add_argument('-i', '--ingest',   type=Path,  nargs='+',                      help='import files or directories into the database')
@@ -547,13 +561,13 @@ if __name__ == '__main__':
             options.verbose = True
 
         if options.ingest and not options.unattended:
-            logger.listener.start()
+            logger.start_listener()
             main(options)
 
         else:
             p = multiprocessing.Process(target=main, args=(options,))
             p.start()
-            logger.listener.start()
+            logger.start_listener()
 
     except argparse.ArgumentError as e:
         log.error(e)
@@ -563,6 +577,6 @@ if __name__ == '__main__':
     finally:
         try:
             p.join()
-            logger.listener.stop()
+            logger.stop_listener()
         except:
             pass

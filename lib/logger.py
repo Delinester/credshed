@@ -2,6 +2,7 @@
 
 # by TheTechromancer
 
+import atexit
 import logging
 from copy import copy
 from pathlib import Path
@@ -80,6 +81,54 @@ listener = CustomQueueListener(log_queue, console)
 log_sender = QueueHandler(log_queue)
 root_logger.handlers = [log_sender]
 #root_logger.handlers = [console]
+
+# Log records are shipped through a multiprocessing.Queue so worker subprocesses can
+# log to the same console.  That queue has a background "feeder" thread which, at
+# interpreter shutdown, multiprocessing tries to join — and if the queue still holds
+# unconsumed records (because nothing is draining it), that join BLOCKS FOREVER and
+# the whole process hangs on exit.  Historically only the CLI started the listener,
+# so any other user of the library (the web app, tools, tests, embedding code) left
+# the queue undrained and hung at exit (long-running servers only escaped because the
+# service manager eventually SIGKILLs them).  Start the listener once here so the
+# queue is always drained, and guarantee a clean exit no matter how the library is
+# used.
+_listener_started = False
+
+
+def start_listener():
+    '''Start the logging queue listener exactly once (idempotent).'''
+    global _listener_started
+    if not _listener_started:
+        try:
+            listener.start()
+            _listener_started = True
+        except Exception:
+            pass
+
+
+def stop_listener():
+    '''Stop the logging queue listener if running (idempotent).'''
+    global _listener_started
+    if _listener_started:
+        try:
+            listener.stop()
+        except Exception:
+            pass
+        _listener_started = False
+
+
+def _shutdown_logging():
+    stop_listener()
+    # Never let the queue's feeder thread block process exit (any records still
+    # buffered here are console log lines, not data).
+    try:
+        log_queue.cancel_join_thread()
+    except Exception:
+        pass
+
+
+start_listener()
+atexit.register(_shutdown_logging)
 
 logdir = Path('/var/log/credshed')
 date_str = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')

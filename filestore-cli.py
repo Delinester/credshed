@@ -75,7 +75,7 @@ if __name__ == '__main__':
 
         p = multiprocessing.Process(target=main, args=(options,))
         p.start()
-        logger.listener.start()
+        logger.start_listener()
 
     except AssertionError as e:
         log.error(f'AssertionError {e}')
@@ -95,6 +95,6 @@ if __name__ == '__main__':
     finally:
         try:
             p.join()
-            logger.listener.stop()
+            logger.stop_listener()
         except:
             pass

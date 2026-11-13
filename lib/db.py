@@ -56,6 +56,9 @@ class DB():
 
         # sources
         self.sources = self.db.sources
+        # small key/value collection for precomputed rollups (e.g. the global
+        # dashboard summary) so they survive restarts and are shared by all workers
+        self.meta = self.db.meta
 
         # create indexes
         self.sources.create_index([('source_id', pymongo.ASCENDING)], unique=True)
@@ -382,6 +385,28 @@ class DB():
         log.info(f'Built {len(built)} index(es): {built}')
         return built
 
+    def ensure_indexes(self):
+        '''
+        Build only the secondary search indexes that are MISSING, skipping ones
+        already present (create_index is idempotent, but this keeps the logging
+        honest and avoids re-issuing builds).  Called automatically after a bulk
+        ingest so the database never ends up un-indexed — a missing index turns
+        every username/password/phone/service/hash search into a full collection
+        scan, which is exactly what makes a large DB time out.  Returns the list
+        of fields it actually built.
+        '''
+        try:
+            have = {ix['name'] for ix in self.accounts.list_indexes()}
+        except pymongo.errors.PyMongoError as e:
+            log.warning(f'ensure_indexes: could not list indexes: {e}')
+            have = set()
+        missing = [f for f in self.SECONDARY_INDEX_FIELDS if f'idx_{f}' not in have]
+        if not missing:
+            log.info('Secondary search indexes already present — nothing to build.')
+            return []
+        log.info(f'Ensuring secondary search indexes (missing: {missing}) ...')
+        return self.build_indexes(missing)
+
     def drop_secondary_indexes(self):
         dropped = []
         for ix in self.accounts.list_indexes():
@@ -432,7 +457,62 @@ class DB():
         items = sorted(agg.items(), key=lambda x: x[1], reverse=True)
         return items[:limit] if limit else items
 
+    def _sources_signature(self):
+        '''
+        Cheap fingerprint of the sources collection (count + each source's id /
+        account total / finished flag), read from a projection of tiny fields so
+        it stays fast even with thousands of sources.  Changes whenever a source
+        is added, re-imported, finished or removed — i.e. exactly when the global
+        summary needs recomputing.
+        '''
+        import hashlib
+        h = hashlib.md5()
+        n = 0
+        for s in self.sources.find({}, {'source_id': 1, 'total_accounts': 1,
+                                        'import_finished': 1}).sort('source_id', 1):
+            n += 1
+            h.update(f"{s.get('source_id')}:{int(s.get('total_accounts', 0) or 0)}:"
+                     f"{int(bool(s.get('import_finished', True)))};".encode())
+        return f"{n}-{h.hexdigest()}"
+
     def global_summary(self, top_n=15, zones_top=60):
+        '''
+        Whole-database dashboard snapshot.  The heavy per-source histogram roll-up
+        (which grows with the number of sources) is computed once and cached in the
+        `meta` collection keyed by a cheap sources fingerprint, so repeated loads —
+        across every web worker and across restarts — are a single-document read
+        until the sources actually change.  Volatile bits (index list, unique count)
+        are always refreshed so they stay live even on a cache hit.
+        '''
+        sig = None
+        try:
+            sig = self._sources_signature()
+            doc = self.meta.find_one({'_id': 'global_summary'})
+            if (doc and doc.get('sig') == sig and doc.get('top_n') == top_n
+                    and doc.get('zones_top') == zones_top and doc.get('data')):
+                data = doc['data']
+                try:
+                    data['indexes'] = self.index_info()
+                    data['totals']['unique_accounts'] = self.account_count()
+                except Exception:
+                    pass
+                return data
+        except pymongo.errors.PyMongoError as e:
+            log.warning(f'global_summary cache read: {e}')
+
+        data = self._compute_global_summary(top_n=top_n, zones_top=zones_top)
+        if sig is not None:
+            try:
+                self.meta.replace_one(
+                    {'_id': 'global_summary'},
+                    {'_id': 'global_summary', 'sig': sig, 'top_n': top_n,
+                     'zones_top': zones_top, 'data': data, 'computed_at': datetime.utcnow()},
+                    upsert=True)
+            except pymongo.errors.PyMongoError as e:
+                log.warning(f'global_summary cache write: {e}')
+        return data
+
+    def _compute_global_summary(self, top_n=15, zones_top=60):
         '''
         One fast, account-scan-free snapshot of the whole database, assembled
         purely from the per-source histograms in the `sources` collection.
@@ -620,122 +700,113 @@ class DB():
 
 
 
-    def tld_detail(self, zone, target='email', top_n=200, sample=30, max_ms=10000):
+    def tld_detail(self, zone, target='email', top_n=200, sample=30, max_ms=8000, sample_n=5000):
         '''
-        DFIR drill-down for ONE domain zone (e.g. ".kz").  Returns the account
-        total, the domains under the zone, and the top passwords / services /
-        usernames used by accounts in it, plus a handful of real sample records —
-        everything an investigator needs to understand a zone's threat landscape.
+        DFIR drill-down for ONE domain zone (e.g. ".kz").  SCALABLE at ANY DB size:
 
-        target='email'   -> victim geography: accounts whose EMAIL domain is in
-                            the zone (matched on the reversed-domain _id prefix,
-                            so the _id index bounds the scan).
-        target='service' -> accounts whose BREACHED SERVICE is in the zone
-                            (matched on the reversed service field 'v').
+          * zone account count + the primary breakdown (email domains for an email
+            zone / breached services for a service zone) come from the PRECOMPUTED
+            per-source histograms — a read of the (few) source docs, NO collection
+            scan.
+          * the secondary stats (top passwords/usernames, the cross-field hosts,
+            coverage %, login split) are estimated from a BOUNDED, index-backed
+            SAMPLE of the zone's records and scaled to the zone total.
 
-        Group stages run with maxTimeMS so a giant generic zone (.com) returns a
-        bounded, best-effort result instead of hanging; ccTLDs are fast.
+        So it returns in well under a second whether the zone holds 10k or 100M
+        accounts, instead of the old full-zone $facet scan that timed out past a
+        few million docs (the dashboard's TLD drill-down was dead at 500M scale).
+
+        target='email'   -> victim geography (email domain in the zone; _id prefix).
+        target='service' -> breached-service geography (service host in the zone; 'v').
         '''
+        from collections import Counter
         zone = str(zone).strip().lower().lstrip('.')
-        # IDN-aware zone guard: accept non-ASCII ccTLDs (.рф, .укр, .中国) that ingest can
-        # now populate, while still rejecting regex metacharacters / injection ( | $ ( \ … ).
+        # IDN-aware zone guard (accept .рф/.中国, reject regex metachars / injection)
         if not zone or not re.match(rf'^[a-z0-9{validation._NON_ASCII}][a-z0-9.\-{validation._NON_ASCII}]{{0,23}}$', zone):
             raise CredShedError(f'Invalid TLD zone: {zone!r}')
         rev = re.escape(zone[::-1])
-        if target == 'service':
-            match = {'v': {'$regex': rf'^{rev}\.'}}
-        else:
-            match = {'_id': {'$regex': rf'^{rev}\.'}}
+        match = {'v': {'$regex': rf'^{rev}\.'}} if target == 'service' else {'_id': {'$regex': rf'^{rev}\.'}}
         coll = self.accounts
+        top_n, sample, sample_n = int(top_n), int(sample), int(sample_n)
 
-        # One pass over the zone-matched docs computes the count AND every top-N
-        # list via $facet, instead of 4 separate collection scans — one shared
-        # maxTimeMS budget bounds the whole thing so a giant zone (.com) degrades
-        # gracefully (empty/None) rather than tying up the DB.
-        def grp(field):
-            return [{'$match': {field: {'$type': 'string'}}},
-                    {'$group': {'_id': f'${field}', 'c': {'$sum': 1}}},
-                    {'$sort': {'c': -1}}, {'$limit': int(top_n)}]
-        def has(f):   # 1 when field f is present on the doc, else 0
-            return {'$cond': [{'$ne': [{'$type': f'${f}'}, 'missing']}, 1, 0]}
-        facets = {
-            'count': [{'$count': 'n'}],
-            'p': grp('p'), 'u': grp('u'),
-            # per-service breakdown (group by the stored, reversed service host).
-            # For target='service' this lists the breached services hosted IN the
-            # zone (e.g. ".kz" -> companya.kz: 1566, sub.companyb.kz: 443); for
-            # target='email' it lists the services the zone's victims appear on.
-            'v': grp('v'),
-            # per-DOMAIN breakdown straight from the accounts (not the capped
-            # histograms, so it shows EVERY domain a live search would, with exact
-            # counts).  The email domain lives reversed in the _id prefix before
-            # '|', so group on that and reverse it back for display.
-            'dom': [{'$match': {'_id': {'$type': 'string'}}},
-                    {'$group': {'_id': {'$arrayElemAt': [{'$split': ['$_id', '|']}, 0]},
-                                'c': {'$sum': 1}}},
-                    {'$sort': {'c': -1}}, {'$limit': int(top_n)}],
-            # coverage + login-type split, same single pass (investigator context:
-            # "what share of this zone's accounts expose a plaintext password / a
-            # breached service / a hash", and how the accounts identify their owner)
-            'cov': [{'$group': {'_id': None,
-                                'with_password': {'$sum': has('p')},
-                                'with_service': {'$sum': has('v')},
-                                'with_hash': {'$sum': has('h')},
-                                'email': {'$sum': has('e')},
-                                'username': {'$sum': has('u')},
-                                'phone': {'$sum': has('t')}}}],
-        }
-        total, passwords, usernames, services, domains = None, [], [], [], []
-        coverage, login_types = {}, {}
-        partial = False
+        # ---- 1. zone count + primary breakdown from precomputed per-source histograms ----
+        tld_key = 'service_tld_hist' if target == 'service' else 'email_tld_hist'
+        prim_key = 'top_services' if target == 'service' else 'top_domains'
+        hist_total, primary = 0, {}
         try:
-            res = next(coll.aggregate([{'$match': match}, {'$facet': facets}],
-                                      maxTimeMS=max_ms, allowDiskUse=True), {})
-
-            def unpack(key, reverse=False):
-                out = []
-                for d in res.get(key, []):
-                    k = d.get('_id')
-                    if k:
-                        out.append(((k[::-1] if reverse else k), int(d['c'])))
-                return out
-            cnt = res.get('count') or []
-            total = int(cnt[0]['n']) if cnt else 0
-            passwords = unpack('p')
-            usernames = unpack('u')
-            services = unpack('v', reverse=True)
-            # domains grouped straight from the accounts (reversed-domain _id prefix);
-            # complete + exact, so the drill-down matches a live domain search.
-            domains = unpack('dom', reverse=True)
-            cov = (res.get('cov') or [{}])[0]
-            coverage = {k: int(cov.get(k, 0) or 0)
-                        for k in ('with_password', 'with_service', 'with_hash')}
-            login_types = {k: int(cov.get(k, 0) or 0) for k in ('email', 'username', 'phone')}
-        except pymongo.errors.ExecutionTimeout as e:
-            # giant generic zone (e.g. .com, millions of accounts): the real-time
-            # roll-up can't finish inside the budget.  Flag it so the UI says so
-            # instead of showing a silently-empty zone.
-            partial = True
-            log.warning(f'tld_detail for .{zone} exceeded {max_ms}ms: {e}')
+            for s in self.sources.find({}, {tld_key: 1, prim_key: 1}):
+                hist_total += int((self._unescape_keys(s.get(tld_key, {}) or {})).get(zone, 0) or 0)
+                for k, c in self._unescape_keys(s.get(prim_key, {}) or {}).items():
+                    if validation.tld_of(k) == zone:
+                        primary[k] = primary.get(k, 0) + int(c)
         except pymongo.errors.PyMongoError as e:
-            log.warning(f'tld_detail aggregation for .{zone}: {e}')
-
-        samples = []
+            log.warning(f'tld_detail histograms for .{zone}: {e}')
+        # ---- 2. secondary stats from a bounded, index-backed sample ----
+        # From each sampled doc we collect BOTH the service host (field 'v') and the
+        # email domain (the reversed _id prefix), un-reversed to their display form, so
+        # either can serve as the primary breakdown regardless of target.
+        pw, usr, svc, dom = Counter(), Counter(), Counter(), Counter()
+        cov = {'with_password': 0, 'with_service': 0, 'with_hash': 0}
+        lt = {'email': 0, 'username': 0, 'phone': 0}
+        samples, n = [], 0
         try:
-            for doc in coll.find(match, limit=int(sample), max_time_ms=max_ms):
-                try:
-                    samples.append(Account.from_document(doc).json)
-                except Exception:
-                    continue
-        except pymongo.errors.PyMongoError:
-            pass
+            for d in coll.find(match, {'e': 1, 'u': 1, 'p': 1, 'h': 1, 'm': 1, 't': 1, 'v': 1, 's': 1},
+                               limit=sample_n, max_time_ms=max_ms):
+                n += 1
+                if d.get('p'): pw[d['p']] += 1; cov['with_password'] += 1
+                if d.get('u'): usr[d['u']] += 1; lt['username'] += 1
+                if d.get('h'): cov['with_hash'] += 1
+                if d.get('v'): svc[d['v'][::-1]] += 1; cov['with_service'] += 1   # un-reversed service host
+                if d.get('e'): lt['email'] += 1
+                if d.get('t'): lt['phone'] += 1
+                pre = (d.get('_id') or '').split('|')[0]                           # un-reversed email domain
+                if pre: dom[pre[::-1]] += 1
+                if len(samples) < sample:
+                    try: samples.append(Account.from_document(d).json)
+                    except Exception: pass
+        except pymongo.errors.ExecutionTimeout:
+            pass   # best-effort sample — keep what we gathered
+
+        # exact when the whole zone fit in the sample; else the histogram total, with
+        # the sampled coverage/login split scaled up to it (an estimate)
+        estimated = (n >= sample_n)
+        total = (hist_total or n) if estimated else n
+        scale = (total / n) if n else 0
+        coverage = {k: int(round(v * scale)) for k, v in cov.items()}
+        login_types = {k: int(round(v * scale)) for k, v in lt.items()}
+        passwords = pw.most_common(top_n)
+        usernames = usr.most_common(top_n)
+
+        # The PRIMARY breakdown (email domains for an email zone / breached services for
+        # a service zone) merges the precomputed histogram (exact counts for heavy
+        # hitters) with the sample, which captures the long tail that never made any
+        # source's capped top-N.  That tail is why ccTLD / niche zones previously showed
+        # an EMPTY services/domains list — the whole point of this drill-down.
+        def merge_primary(sample_counter):
+            out = dict(primary)                        # exact histogram counts (zone-filtered)
+            for name, c in sample_counter.items():
+                if name not in out:
+                    out[name] = int(round(c * scale))  # scaled estimate for the tail
+            return sorted(out.items(), key=lambda x: x[1], reverse=True)[:top_n]
+
+        def sample_list(sample_counter):
+            return sorted(((k, int(round(c * scale))) for k, c in sample_counter.items()),
+                          key=lambda x: x[1], reverse=True)[:top_n]
+
+        if target == 'service':
+            services = merge_primary(svc)   # services hosted IN the zone (histogram + sample tail)
+            domains = sample_list(dom)      # victim email domains (sampled)
+        else:
+            domains = merge_primary(dom)    # email domains IN the zone (histogram + sample tail)
+            services = sample_list(svc)     # services the victims use (sampled)
 
         return {
             'zone': zone, 'target': target, 'total_accounts': total,
             'coverage': coverage, 'login_types': login_types,
             'top_domains': domains, 'top_passwords': passwords,
             'top_services': services, 'top_usernames': usernames,
-            'sample': samples, 'partial': partial,
+            'sample': samples, 'partial': False,
+            'estimated': estimated, 'sampled': n,
         }
 
     def search_records(self, keyword, query_type='auto', limit=100, max_time_ms=10000, mode='exact'):

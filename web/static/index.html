@@ -59,7 +59,7 @@
   .tiles{display:grid; grid-template-columns:repeat(auto-fit,minmax(168px,1fr)); gap:14px; margin-top:12px}
   .tile{background:var(--surface); border:1px solid var(--border); border-radius:var(--r); padding:16px 16px 14px; box-shadow:var(--shadow)}
   .tile .k{font-size:12px; color:var(--ink-2); display:flex; align-items:center; gap:7px}
-  .tile .v{font-size:clamp(22px,2.1vw,30px); font-weight:750; margin-top:7px; letter-spacing:-.02em; white-space:nowrap}
+  .tile .v{font-size:clamp(20px,2vw,29px); font-weight:750; margin-top:7px; letter-spacing:-.02em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%}
   .tile .x{font-size:12px; color:var(--muted); margin-top:3px}
   .swatch{width:9px;height:9px;border-radius:2px;flex:none}
 
@@ -157,7 +157,7 @@
   .resultbox{margin-top:12px; max-height:520px; overflow:auto}
   .mini{display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin:2px 0 6px}
   .mini .m{background:var(--surface-2); border:1px solid var(--border); border-radius:10px; padding:9px 11px}
-  .mini .m .k{font-size:11px; color:var(--ink-2)} .mini .m .v{font-size:19px; font-weight:700; margin-top:2px}
+  .mini .m{min-width:0} .mini .m .k{font-size:11px; color:var(--ink-2)} .mini .m .v{font-size:19px; font-weight:700; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
   .pivot{cursor:pointer; border-bottom:1px dotted transparent}
   .pivot:hover{color:var(--s1); border-bottom-color:var(--s1)}
   .rhead{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px}
@@ -328,6 +328,15 @@ function offlineTld(zone, target){
 
 const $ = s => document.querySelector(s);
 const fmt = n => (n==null?'—':Number(n).toLocaleString('en-US'));
+// compact magnitude for stat tiles — never overflows, even at B/T scale (terabytes of data).
+const fmtK = n => { if(n==null) return '—'; n=Number(n); if(!isFinite(n)) return '—';
+  const a=Math.abs(n); if(a<1000) return String(n);
+  for(const [d,s] of [[1e12,'T'],[1e9,'B'],[1e6,'M'],[1e3,'K']]){
+    if(a>=d){ const x=n/d; return (x>=100?Math.round(x):+x.toFixed(x>=10?1:2))+s; } }
+  return String(n); };
+// tile value: compact text that never overflows, with the exact comma number on hover.
+const bigVal = n => (n!=null && (typeof n==='number' || /^-?\d+$/.test(String(n))))
+  ? `<span title="${fmt(n)}">${fmtK(n)}</span>` : String(n==null?'—':n);
 const pct = (n,d) => d? (100*n/d):0;
 const bytesH = b => { if(!b) return '—'; const u=['B','KB','MB','GB','TB','PB']; let i=0; b=+b; while(b>=1024&&i<u.length-1){b/=1024;i++} return b.toFixed(b<10&&i>0?1:0)+' '+u[i]; };
 const esc = s => String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -415,14 +424,14 @@ function render(d){
   const acctSub = uniq!==rows ? `${fmt(d.sources.length)} sources · ${fmt(rows)} rows · ${bytesH(t.filesize)}`
                               : `${fmt(d.sources.length)} source${d.sources.length!=1?'s':''} · ${bytesH(t.filesize)}`;
   const tiles=[
-    ['Accounts', fmt(uniq), acctSub, 'var(--s1)'],
-    ['With breached service', fmt(t.with_service), `${pct(t.with_service,rows).toFixed(0)}% of rows`, 'var(--s3)'],
-    ['With password', fmt(t.with_password), `${pct(t.with_password,t.accounts).toFixed(0)}% plaintext`, 'var(--s1)'],
-    ['With phone', fmt(t.phone), `${pct(t.phone,t.accounts).toFixed(1)}% of records`, 'var(--s2)'],
-    ['With hash', fmt(t.with_hash), 'hashed secrets', 'var(--s5)'],
-    ['Indexed fields', String(d.indexes.filter(x=>x!=='_id_').length+1), d.indexes.join(', '), 'var(--s4)'],
+    ['Accounts', uniq, acctSub, 'var(--s1)'],
+    ['With breached service', t.with_service, `${pct(t.with_service,rows).toFixed(0)}% of rows`, 'var(--s3)'],
+    ['With password', t.with_password, `${pct(t.with_password,t.accounts).toFixed(0)}% plaintext`, 'var(--s1)'],
+    ['With phone', t.phone, `${pct(t.phone,t.accounts).toFixed(1)}% of records`, 'var(--s2)'],
+    ['With hash', t.with_hash, 'hashed secrets', 'var(--s5)'],
+    ['Indexed fields', d.indexes.filter(x=>x!=='_id_').length+1, d.indexes.join(', '), 'var(--s4)'],
   ];
-  $('#tiles').innerHTML = tiles.map(([k,v,x,c])=>`<div class="tile"><div class="k"><span class="swatch" style="background:${c}"></span>${k}</div><div class="v tnum">${v}</div><div class="x">${esc(x)}</div></div>`).join('');
+  $('#tiles').innerHTML = tiles.map(([k,v,x,c])=>`<div class="tile"><div class="k"><span class="swatch" style="background:${c}"></span>${k}</div><div class="v tnum">${bigVal(v)}</div><div class="x">${esc(x)}</div></div>`).join('');
 
   const lt=[['Email',t.email,'var(--s1)'],['Username',t.username,'var(--s2)'],['Phone',t.phone,'var(--s3)']];
   const ltot=lt.reduce((a,b)=>a+b[1],0)||1;
@@ -473,7 +482,7 @@ function drawGeo(target){
 }
 
 // ---- per-dataset detail modal -----------------------------------------------
-function sTile(k,v,x,c){ return `<div class="tile"><div class="k"><span class="swatch" style="background:${c}"></span>${k}</div><div class="v tnum">${v}</div><div class="x">${esc(x)}</div></div>`; }
+function sTile(k,v,x,c){ return `<div class="tile"><div class="k"><span class="swatch" style="background:${c}"></span>${k}</div><div class="v tnum">${bigVal(v)}</div><div class="x">${esc(x)}</div></div>`; }
 function dList(mount, items, color, drill){ expandable(mount, {items: items||[], color, top:12, drill}); }
 let TLD_TOKEN = 0;   // bumped on every user-initiated close / new drill, so a late
                      // fetch can tell it has been superseded and not re-open a modal
@@ -532,11 +541,11 @@ function renderDetailModal(d){
   back.querySelector('#mClose').onclick=closeModal;
 
   back.querySelector('#mTiles').innerHTML=[
-    sTile('Accounts', fmt(acc), `${esc(d.parser_format||'?')}${d.filesize?' · '+bytesH(d.filesize):''}`, 'var(--s1)'),
-    sTile('With breached service', fmt(t.with_service), `${pct(t.with_service,acc).toFixed(0)}% of records`, 'var(--s3)'),
-    sTile('With password', fmt(t.with_password), `${pct(t.with_password,acc).toFixed(0)}% plaintext`, 'var(--s1)'),
-    sTile('With phone', fmt(t.phone), `${pct(t.phone,acc).toFixed(1)}% of records`, 'var(--s2)'),
-    sTile('With hash', fmt(t.with_hash), 'hashed secrets', 'var(--s5)'),
+    sTile('Accounts', acc, `${esc(d.parser_format||'?')}${d.filesize?' · '+bytesH(d.filesize):''}`, 'var(--s1)'),
+    sTile('With breached service', t.with_service, `${pct(t.with_service,acc).toFixed(0)}% of records`, 'var(--s3)'),
+    sTile('With password', t.with_password, `${pct(t.with_password,acc).toFixed(0)}% plaintext`, 'var(--s1)'),
+    sTile('With phone', t.phone, `${pct(t.phone,acc).toFixed(1)}% of records`, 'var(--s2)'),
+    sTile('With hash', t.with_hash, 'hashed secrets', 'var(--s5)'),
   ].join('');
 
   const lt=[['Email',t.email||0,'var(--s1)'],['Username',t.username||0,'var(--s2)'],['Phone',t.phone||0,'var(--s3)']];
@@ -778,7 +787,7 @@ function renderTldModal(d){
 
   const total=d.total_accounts;
   back.querySelector('#tldMeta').innerHTML =
-    `<span>${total==null?'—':fmt(total)} accounts</span><span>·</span>`+
+    `<span title="${total==null?'':fmt(total)}">${total==null?'—':fmtK(total)} accounts</span><span>·</span>`+
     `<span>${fmt((d.top_domains||[]).length)} domains</span><span>·</span>`+
     `<span>${fmt((d.sample||[]).length)} sample records</span>`;
   const svcNote = target==='service'
@@ -793,16 +802,19 @@ function renderTldModal(d){
   const domCard = `<div class="card"><h3>${domTitle}</h3><p class="note">${domNote}</p><div id="tDom"></div></div>`;
   // per-zone threat-landscape tiles (coverage + login identity), from the same aggregation
   const cov=d.coverage||{}, lt=d.login_types||{}, tot=total||0, zp=n=>tot?Math.round(100*n/tot):0;
+  const est = d.estimated, approx = est ? '≈' : '';
   const tiles = `<div class="mini">
-    <div class="m"><div class="k">Accounts</div><div class="v tnum">${fmt(tot)}</div></div>
-    <div class="m"><div class="k">With password</div><div class="v tnum">${fmt(cov.with_password||0)}</div><div class="k">${zp(cov.with_password||0)}% plaintext</div></div>
-    <div class="m"><div class="k">With breached service</div><div class="v tnum">${fmt(cov.with_service||0)}</div><div class="k">${zp(cov.with_service||0)}% of records</div></div>
-    <div class="m"><div class="k">With hash</div><div class="v tnum">${fmt(cov.with_hash||0)}</div></div>
-    <div class="m"><div class="k">Email / User / Phone</div><div class="v tnum" style="font-size:16px">${fmt(lt.email||0)} / ${fmt(lt.username||0)} / ${fmt(lt.phone||0)}</div></div>
+    <div class="m"><div class="k">Accounts</div><div class="v tnum">${bigVal(tot)}</div></div>
+    <div class="m"><div class="k">With password</div><div class="v tnum">${approx}${bigVal(cov.with_password||0)}</div><div class="k">${zp(cov.with_password||0)}% plaintext</div></div>
+    <div class="m"><div class="k">With breached service</div><div class="v tnum">${approx}${bigVal(cov.with_service||0)}</div><div class="k">${zp(cov.with_service||0)}% of records</div></div>
+    <div class="m"><div class="k">With hash</div><div class="v tnum">${approx}${bigVal(cov.with_hash||0)}</div></div>
+    <div class="m"><div class="k">Email / User / Phone</div><div class="v tnum" style="font-size:15px">${bigVal(lt.email||0)} / ${bigVal(lt.username||0)} / ${bigVal(lt.phone||0)}</div></div>
   </div>`;
   const partialNote = d.partial
     ? `<p class="hint warn" style="margin:0 0 12px">⚠ <b>.${esc(zone)}</b> is too large to roll up in real time, so the breakdown below is incomplete. Use the search box to look up specific domains, services or passwords in this zone.</p>`
-    : '';
+    : (est
+      ? `<p class="hint" style="margin:0 0 12px; color:var(--muted)">Account total and the ${target==='service'?'services':'domains'} breakdown are exact (precomputed); passwords, usernames, coverage and the identity split are <b>estimated from a ${fmt(d.sampled)}-record sample</b> of this zone (marked ≈). Open a specific domain/service/password for exact records.</p>`
+      : '');
   body.innerHTML = partialNote + tiles + `
     <section class="grid">
       ${domCard}
