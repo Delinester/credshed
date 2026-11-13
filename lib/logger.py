@@ -86,12 +86,16 @@ root_logger.handlers = [log_sender]
 # log to the same console.  That queue has a background "feeder" thread which, at
 # interpreter shutdown, multiprocessing tries to join — and if the queue still holds
 # unconsumed records (because nothing is draining it), that join BLOCKS FOREVER and
-# the whole process hangs on exit.  Historically only the CLI started the listener,
-# so any other user of the library (the web app, tools, tests, embedding code) left
-# the queue undrained and hung at exit (long-running servers only escaped because the
-# service manager eventually SIGKILLs them).  Start the listener once here so the
-# queue is always drained, and guarantee a clean exit no matter how the library is
-# used.
+# the whole process hangs on exit.
+#
+# CRITICAL: the QueueListener must NOT be started at import time.  The bulk ingest
+# forks dozens of worker processes (ProcessPool, fork start-method); forking while a
+# listener/feeder thread is running leaves the child holding that thread's queue/log
+# locks in an indeterminate state, so every worker blocks on its first log call and
+# ingestion grinds to a near-halt (workers sit at ~0% CPU).  So we expose start/stop
+# helpers that the entry points call AFTER the relevant fork, and we only register an
+# atexit handler (no thread, fork-safe) to guarantee a clean exit regardless of how
+# the library is used.
 _listener_started = False
 
 
@@ -127,7 +131,8 @@ def _shutdown_logging():
         pass
 
 
-start_listener()
+# NB: do NOT call start_listener() here — see the note above (fork hazard).  Entry
+# points start it after forking (credshed-cli after p.start(); web app at startup).
 atexit.register(_shutdown_logging)
 
 logdir = Path('/var/log/credshed')
