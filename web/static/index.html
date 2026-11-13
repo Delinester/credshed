@@ -659,6 +659,31 @@ async function download(name, text, type){
     const a=document.createElement('a'); a.href=u; a.download=name; document.body.appendChild(a); a.click();
     a.remove(); setTimeout(()=>URL.revokeObjectURL(u),1000); }catch(e){}
 }
+// Export the WHOLE zone/country drill-down (summary + the complete breakdown lists)
+// as one tidy CSV, so an investigator can drop "all affected services in .uz" straight
+// into a report.  Categories: summary / service / domain / password / username.
+function tldToCSV(d){
+  const q=v=>{ v=(v==null?'':String(v)); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
+  const L=['category,value,count'];
+  const cov=d.coverage||{}, lt=d.login_types||{};
+  L.push(`summary,zone,${q(d.zone)}`);
+  L.push(`summary,kind,${d.kind||'zone'}`);
+  L.push(`summary,target,${d.target||''}`);
+  L.push(`summary,total_accounts,${d.total_accounts||0}`);
+  L.push(`summary,with_password,${cov.with_password||0}`);
+  L.push(`summary,with_service,${cov.with_service||0}`);
+  L.push(`summary,with_hash,${cov.with_hash||0}`);
+  L.push(`summary,email_logins,${lt.email||0}`);
+  L.push(`summary,username_logins,${lt.username||0}`);
+  L.push(`summary,phone_logins,${lt.phone||0}`);
+  L.push(`summary,breakdown_complete,${d.complete?'yes':'estimated'}`);
+  const add=(cat,list)=>(list||[]).forEach(e=>{ const v=Array.isArray(e)?e[0]:e, c=Array.isArray(e)?e[1]:''; L.push(`${cat},${q(v)},${c}`); });
+  add('service', d.top_services);
+  add('domain', d.top_domains);
+  add('password', d.top_passwords);
+  add('username', d.top_usernames);
+  return L.join('\n');
+}
 function pivotTo(pt, pv){
   closeModal();
   $('#andConds').innerHTML='';                 // a pivot is a clean single-field lookup
@@ -797,7 +822,11 @@ function renderTldModal(d){
     <div class="modal-head"><div style="min-width:0">
       <h2>${zlabel} <span style="color:var(--muted);font-size:12.5px;font-weight:400">${target==='service'?'breached-platform '+ztype:'victim email '+ztype}</span></h2>
       <div class="meta" id="tldMeta"></div></div>
-      <button class="xbtn" id="mClose">✕ Close</button></div>
+      <div style="display:flex;gap:8px;align-items:center;flex:none">
+        <button class="xbtn2" id="tldCsv" title="Export this zone/country (summary + complete breakdown) as CSV">⤓ CSV</button>
+        <button class="xbtn2" id="tldJson" title="Export as JSON">⤓ JSON</button>
+        <button class="xbtn" id="mClose">✕ Close</button>
+      </div></div>
     <div class="modal-body" id="tldBody"></div></div>`;
   document.body.appendChild(back); document.body.style.overflow='hidden';
   back.onclick=e=>{ if(e.target===back) closeModal(); };
@@ -862,6 +891,11 @@ function renderTldModal(d){
   dList(back.querySelector('#tSvc'), d.top_services, 'var(--s3)', host => pivotTo('service', host));
   dList(back.querySelector('#tPw'), d.top_passwords, 'var(--s2)', pw => pivotTo('password', pw));
   dList(back.querySelector('#tUsr'), d.top_usernames, 'var(--s4)', u => pivotTo('username', u));
+  // export the whole zone/country drill-down (summary + complete lists) for a report
+  const slug=`${kind}_${String(zone).replace(/[^a-z0-9]+/gi,'_')}_${target}`;
+  const csvB=back.querySelector('#tldCsv'), jsonB=back.querySelector('#tldJson');
+  if(csvB) csvB.onclick=()=>download(`credshed_${slug}_${Date.now()}.csv`, '﻿'+tldToCSV(d), 'text/csv');
+  if(jsonB) jsonB.onclick=()=>download(`credshed_${slug}_${Date.now()}.json`, JSON.stringify(d,null,2), 'application/json');
 }
 
 function setStatus(live){ LIVE=live;
