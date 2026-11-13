@@ -43,6 +43,22 @@ word_regex = re.compile(r'[a-z]{1}[a-z13450@$]{1,18}[a-z]{1}', re.I)
 _baseword_cache = {}
 _BASEWORD_CACHE_CAP = 100000   # common passwords dominate the hit rate; cap to bound RAM
 
+_url_prefixes = ('http://', 'https://', 'ftp://', 'ftps://', 'www.')
+
+
+def looks_like_url(s):
+    '''
+    True when a value is (or starts as) a URL — e.g. a stealer-log password field that
+    actually captured a URL (Discord webhooks, autofill links, ...).  Used to keep URL
+    noise (https / www / com / login / php / auth ...) OUT of the password/misc BASEWORD
+    theme analysis, where it otherwise dominates and hides real password themes.
+    '''
+    if not s:
+        return False
+    t = s.strip().lower()
+    return t.startswith(_url_prefixes) or '://' in t
+
+
 def basewords_lower(s):
     '''lowercased base words of a string, memoized. Pure -> identical output.'''
     cached = _baseword_cache.get(s)

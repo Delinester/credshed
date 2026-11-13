@@ -172,12 +172,14 @@ class Source():
             L = len(account.password)
             if L <= 128:                       # cap bucket key; longer are outliers
                 self.password_lengths[L] = self.password_lengths.get(L, 0) + 1
-            for word in validation.basewords_lower(account.password):
-                self.password_basewords.bump(word)
+            if not validation.looks_like_url(account.password):   # don't count URL noise
+                for word in validation.basewords_lower(account.password):
+                    self.password_basewords.bump(word)
 
         if account.misc:
-            for word in validation.basewords_lower(account.misc):
-                self.misc_basewords.bump(word)
+            if not validation.looks_like_url(account.misc):
+                for word in validation.basewords_lower(account.misc):
+                    self.misc_basewords.bump(word)
 
 
     def top_domains(self, limit=10):
