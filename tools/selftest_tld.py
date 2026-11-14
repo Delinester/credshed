@@ -104,6 +104,31 @@ def main():
     else:
         check('email drill-down returns (zone may be empty for email)', True)
 
+    # ---- domain exposure report (domain_detail) -------------------------
+    print('-- domain_detail (domain exposure report) --')
+    probe_dom = None
+    for s in db.sources.find({}, {'top_domains': 1}):
+        for k in db._unescape_keys(s.get('top_domains', {}) or {}):
+            if '.' in k and validation.is_domain(k):
+                probe_dom = k; break
+        if probe_dom:
+            break
+    if probe_dom:
+        dd = db.domain_detail(probe_dom)
+        check(f'domain report returns data [{probe_dom}]', dd['total_accounts'] > 0,
+              f"total={dd['total_accounts']}")
+        check('domain report has coverage + sources keys',
+              all(k in dd for k in ('coverage', 'login_types', 'top_passwords', 'sources')))
+        check('domain report sources all resolve (no bare ids)',
+              all(isinstance(s[0], str) for s in dd['sources']))
+    for bad in ['', 'not a domain', '$where', 'x.com|y']:
+        try:
+            db.domain_detail(bad); check(f'domain_detail rejects {bad[:10]!r}', False, 'no error')
+        except CredShedError:
+            check(f'domain_detail rejects {bad[:10]!r}', True)
+        except Exception as e:
+            check(f'domain_detail rejects {bad[:10]!r}', False, f'wrong error {type(e).__name__}')
+
     print(f'\n{len(PASS)} passed, {len(FAIL)} failed')
     return 1 if FAIL else 0
 
