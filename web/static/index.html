@@ -543,7 +543,10 @@ function renderDetailModal(d){
         <div class="meta">${meta.join('<span>·</span>')}</div>
         <div class="note" style="margin-top:4px; word-break:break-all">${esc(name)}${d.files&&d.files.length>1?` · +${d.files.length-1} more file(s)`:''}</div>
       </div>
-      <button class="xbtn" id="mClose">✕ Close</button>
+      <div style="display:flex;gap:8px;align-items:center;flex:none">
+        ${full?'<button class="xbtn2" id="srcCsv" title="Export this dataset (summary + top lists) as CSV">⤓ CSV</button><button class="xbtn2" id="srcJson" title="Export as JSON">⤓ JSON</button>':''}
+        <button class="xbtn" id="mClose">✕ Close</button>
+      </div>
     </div>
     <div class="modal-body">
       <section class="tiles" id="mTiles"></section>
@@ -579,6 +582,10 @@ function renderDetailModal(d){
     dList(back.querySelector('#mDomains'), d.top_domains, 'var(--s1)', dm=>pivotTo('domain', dm));
     dList(back.querySelector('#mPw'), d.top_password_basewords, 'var(--s5)');   // base-words: not exact
     dList(back.querySelector('#mMisc'), d.top_misc_basewords, 'var(--s4)');     // base-words: not exact
+    const sslug=`source_${d.source_id}_${String(base).replace(/[^a-z0-9]+/gi,'_')}`;
+    const scB=back.querySelector('#srcCsv'), sjB=back.querySelector('#srcJson');
+    if(scB) scB.onclick=()=>download(`credshed_${sslug}_${Date.now()}.csv`, '﻿'+srcToCSV(d), 'text/csv');
+    if(sjB) sjB.onclick=()=>download(`credshed_${sslug}_${Date.now()}.json`, JSON.stringify(d,null,2), 'application/json');
     const drawG=target=>{
       const r=(target==='service'?d.regions_service:d.regions_email)||{zones:[],countries:[],regions:[]};
       back.querySelector('#mGeoNote').textContent = target==='service' ? 'By breached-service domain zone.' : 'By email-domain zone — victim geography.';
@@ -682,6 +689,27 @@ function tldToCSV(d){
   add('domain', d.top_domains);
   add('password', d.top_passwords);
   add('username', d.top_usernames);
+  return L.join('\n');
+}
+// Export a single breach SOURCE/dataset (summary + its top lists) for a report.
+function srcToCSV(d){
+  const q=v=>{ v=(v==null?'':String(v)); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
+  const t=d.totals||{}, L=['category,value,count'];
+  L.push(`summary,source_id,${d.source_id}`);
+  L.push(`summary,name,${q(d.name||'')}`);
+  L.push(`summary,format,${d.parser_format||''}`);
+  L.push(`summary,accounts,${t.accounts||0}`);
+  L.push(`summary,with_password,${t.with_password||0}`);
+  L.push(`summary,with_service,${t.with_service||0}`);
+  L.push(`summary,with_hash,${t.with_hash||0}`);
+  L.push(`summary,email,${t.email||0}`);
+  L.push(`summary,username,${t.username||0}`);
+  L.push(`summary,phone,${t.phone||0}`);
+  const add=(cat,list)=>(list||[]).forEach(e=>{ const v=Array.isArray(e)?e[0]:e, c=Array.isArray(e)?e[1]:''; L.push(`${cat},${q(v)},${c}`); });
+  add('service', d.top_services);
+  add('domain', d.top_domains);
+  add('password_baseword', d.top_password_basewords);
+  add('misc_baseword', d.top_misc_basewords);
   return L.join('\n');
 }
 function pivotTo(pt, pv){
