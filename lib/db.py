@@ -914,7 +914,7 @@ class DB():
         from a bounded sample, like tld_detail, so it is fast at any domain size.
         '''
         from collections import Counter
-        domain = str(domain).strip().lower().lstrip('@').lstrip('.')
+        domain = str(domain).strip().lower().lstrip('@').strip('.')   # tolerate @prefix / trailing dot (FQDN)
         if not domain or not validation.is_domain(domain):
             raise CredShedError(f'Invalid domain: {domain!r}')
         coll = self.accounts
