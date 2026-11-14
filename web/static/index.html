@@ -239,7 +239,7 @@
       </div>
       <div style="display:flex; gap:8px; margin:10px 0 2px; flex-wrap:wrap; align-items:center">
         <input id="geoQ" type="search" autocomplete="off" list="geoQList" spellcheck="false"
-               placeholder="Full statistics for a TLD zone or country — e.g. .uz, co.uk, Uzbekistan"
+               placeholder="Full statistics for a TLD zone, country, or domain — e.g. .uz, co.uk, Uzbekistan, company.com"
                style="flex:1; min-width:220px; padding:8px 11px; border:1px solid var(--border); border-radius:8px; background:var(--surface-2); color:var(--ink); font:inherit">
         <datalist id="geoQList"></datalist>
         <button id="geoQBtn">View full stats ›</button>
@@ -465,12 +465,15 @@ function render(d){
   // "full statistics" query box — type a TLD zone or a country name, get its full drill-down
   (function(){
     const q=$('#geoQ'), btn=$('#geoQBtn'), dl=$('#geoQList'); if(!q) return;
-    const names=new Set();
+    const names=new Set(), known=new Set();
     ['regions_email','regions_service'].forEach(k=>{ const r=d[k]||{};
-      (r.countries||[]).forEach(c=>names.add(Array.isArray(c)?c[0]:c));
-      (r.zones||[]).forEach(z=>names.add('.'+(Array.isArray(z)?z[0]:z))); });
+      (r.countries||[]).forEach(c=>{const n=Array.isArray(c)?c[0]:c; names.add(n); known.add(String(n).toLowerCase());});
+      (r.zones||[]).forEach(z=>{const n=Array.isArray(z)?z[0]:z; names.add('.'+n); known.add(String(n).toLowerCase());}); });
     dl.innerHTML=[...names].slice(0,800).map(n=>`<option value="${esc(n)}">`).join('');
-    const go=()=>{ const v=q.value.trim(); if(v) openTldDetail(v.replace(/^\.+/,''), window.__geo||'email'); };
+    const go=()=>{ const raw=q.value.trim(); if(!raw) return; const v=raw.toLowerCase().replace(/^[.@]+/,'');
+      if(known.has(v)) openTldDetail(v, window.__geo||'email');     // a known TLD zone or country
+      else if(v.includes('.')) openDomainReport(v);                // a specific email domain (e.g. company.com)
+      else openTldDetail(v, window.__geo||'email'); };             // bare word -> try as a zone
     btn.onclick=go; q.onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); go(); } };
   })();
 
@@ -924,6 +927,77 @@ function renderTldModal(d){
   const csvB=back.querySelector('#tldCsv'), jsonB=back.querySelector('#tldJson');
   if(csvB) csvB.onclick=()=>download(`credshed_${slug}_${Date.now()}.csv`, '﻿'+tldToCSV(d), 'text/csv');
   if(jsonB) jsonB.onclick=()=>download(`credshed_${slug}_${Date.now()}.json`, JSON.stringify(d,null,2), 'application/json');
+}
+
+// ---- domain exposure report (one exact email domain) -------------------------
+async function openDomainReport(domain){
+  const tok=++TLD_TOKEN;
+  if(!LIVE){ renderDomainModal({domain, offline:true}); return; }
+  renderDomainModal({domain, loading:true});
+  try{
+    const r=await fetch(`api/domain/${encodeURIComponent(domain)}?sample=30`);
+    const d=await r.json();
+    if(tok!==TLD_TOKEN) return;
+    renderDomainModal(d.error?{domain, error:d.error}:d);
+  }catch(e){ if(tok===TLD_TOKEN) renderDomainModal({domain, error:e.message}); }
+}
+function domainToCSV(d){
+  const q=v=>{ v=(v==null?'':String(v)); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
+  const cov=d.coverage||{}, lt=d.login_types||{}, L=['category,value,count'];
+  L.push(`summary,domain,${q(d.domain)}`); L.push(`summary,total_accounts,${d.total_accounts||0}`);
+  L.push(`summary,with_password,${cov.with_password||0}`); L.push(`summary,with_service,${cov.with_service||0}`); L.push(`summary,with_hash,${cov.with_hash||0}`);
+  const add=(cat,list)=>(list||[]).forEach(e=>{const v=Array.isArray(e)?e[0]:e,c=Array.isArray(e)?e[1]:'';L.push(`${cat},${q(v)},${c}`);});
+  add('password', d.top_passwords); add('service', d.top_services); add('username', d.top_usernames); add('breach_source', d.sources);
+  return L.join('\n');
+}
+function renderDomainModal(d){
+  removeModals();
+  const domain=d.domain||'';
+  const back=document.createElement('div'); back.className='modal-backdrop';
+  back.innerHTML=`<div class="modal" role="dialog" aria-modal="true" aria-label="Domain exposure">
+    <div class="modal-head"><div style="min-width:0">
+      <h2>@${esc(domain)} <span style="color:var(--muted);font-size:12.5px;font-weight:400">domain exposure</span></h2>
+      <div class="meta" id="domMeta"></div></div>
+      <div style="display:flex;gap:8px;align-items:center;flex:none">
+        <button class="xbtn2" id="domCsv" title="Export this domain report as CSV">⤓ CSV</button><button class="xbtn2" id="domJson" title="Export as JSON">⤓ JSON</button>
+        <button class="xbtn" id="mClose">✕ Close</button></div></div>
+    <div class="modal-body" id="domBody"></div></div>`;
+  document.body.appendChild(back); document.body.style.overflow='hidden';
+  back.onclick=e=>{ if(e.target===back) closeModal(); };
+  back.querySelector('#mClose').onclick=closeModal;
+  const body=back.querySelector('#domBody');
+  if(d.loading){ body.innerHTML='<p class="hint">Analysing domain…</p>'; return; }
+  if(d.offline){ body.innerHTML='<p class="hint warn">The domain exposure report needs the live backend.</p>'; return; }
+  if(d.error){ body.innerHTML=`<p class="hint err">${esc(d.error)}</p>`; return; }
+  const total=d.total_accounts||0, cov=d.coverage||{}, lt=d.login_types||{}, zp=n=>total?Math.round(100*n/total):0;
+  const est=d.estimated, approx=est?'≈':'';
+  back.querySelector('#domMeta').innerHTML=`<span title="${fmt(total)}">${fmtK(total)} accounts</span><span>·</span><span>${fmt((d.sources||[]).length)} breach source(s)</span><span>·</span><span>${fmt((d.sample||[]).length)} sample records</span>`;
+  const tiles=`<div class="mini">
+    <div class="m"><div class="k">Accounts</div><div class="v tnum">${bigVal(total)}</div></div>
+    <div class="m"><div class="k">With password</div><div class="v tnum">${approx}${bigVal(cov.with_password||0)}</div><div class="k">${zp(cov.with_password||0)}% plaintext</div></div>
+    <div class="m"><div class="k">With breached service</div><div class="v tnum">${approx}${bigVal(cov.with_service||0)}</div><div class="k">${zp(cov.with_service||0)}% of records</div></div>
+    <div class="m"><div class="k">With hash</div><div class="v tnum">${approx}${bigVal(cov.with_hash||0)}</div></div>
+    <div class="m"><div class="k">Email / User / Phone</div><div class="v tnum" style="font-size:15px">${bigVal(lt.email||0)} / ${bigVal(lt.username||0)} / ${bigVal(lt.phone||0)}</div></div>
+  </div>`;
+  const note=est?`<p class="hint" style="margin:0 0 12px; color:var(--muted)">Figures are <b>estimated from a ${fmt(d.sampled)}-record sample</b> of this domain (marked ≈). Search the domain to pull exact records.</p>`
+                :`<p class="hint" style="margin:0 0 12px; color:var(--muted)">Exact — the whole domain fit in the sample.</p>`;
+  body.innerHTML=note+tiles+`
+    <section class="grid">
+      <div class="card"><h3>Passwords</h3><p class="note">Most used by accounts on this domain — click to pivot.</p><div id="dPw"></div></div>
+      <div class="card"><h3>Breached services</h3><p class="note">Platforms these accounts were breached on.</p><div id="dSvc"></div></div>
+      <div class="card"><h3>Usernames</h3><p class="note">Most common usernames.</p><div id="dUsr"></div></div>
+      <div class="card"><h3>Breach sources</h3><p class="note">Datasets this domain appears in.</p><div id="dSrc"></div></div>
+    </section>
+    <div class="ttl">Sample records</div>
+    <div class="resultbox">${recordsTableHTML(d.sample)}</div>`;
+  dList(back.querySelector('#dPw'), d.top_passwords, 'var(--s2)', pw=>pivotTo('password', pw));
+  dList(back.querySelector('#dSvc'), d.top_services, 'var(--s3)', h=>pivotTo('service', h));
+  dList(back.querySelector('#dUsr'), d.top_usernames, 'var(--s4)', u=>pivotTo('username', u));
+  dList(back.querySelector('#dSrc'), d.sources, 'var(--s1)');
+  const slug=`domain_${String(domain).replace(/[^a-z0-9]+/gi,'_')}`;
+  const cB=back.querySelector('#domCsv'), jB=back.querySelector('#domJson');
+  if(cB) cB.onclick=()=>download(`credshed_${slug}_${Date.now()}.csv`, '﻿'+domainToCSV(d), 'text/csv');
+  if(jB) jB.onclick=()=>download(`credshed_${slug}_${Date.now()}.json`, JSON.stringify(d,null,2), 'application/json');
 }
 
 function setStatus(live){ LIVE=live;
