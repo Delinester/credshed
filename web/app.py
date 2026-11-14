@@ -89,7 +89,15 @@ def compact(d, n=15):
 @app.get('/api/summary')
 def api_summary():
     try:
-        return JSONResponse(compact(full()))
+        data = compact(full())
+        # live (not cached with the summary): warn the dashboard when the secondary
+        # indexes are rebuilding after a bulk import, so field searches being slow is
+        # explained rather than mysterious.
+        try:
+            data['index_build'] = credshed().db.index_build_status()
+        except Exception:
+            pass
+        return JSONResponse(data)
     except CredShedError as e:
         return JSONResponse({'error': str(e)}, status_code=503)
     except Exception as e:  # pragma: no cover
@@ -311,6 +319,16 @@ def api_compromised(limit: int = 50, min_breaches: int = 3):
         return JSONResponse({'error': str(e)}, status_code=400)
     except Exception as e:  # pragma: no cover
         return JSONResponse({'error': f'{e.__class__.__name__}: {e}'}, status_code=500)
+
+
+@app.get('/api/index_build')
+def api_index_build():
+    '''Live secondary-index rebuild progress (cheap, cached ~15s server-side) so the
+    dashboard can show a progress line while a post-bulk-load rebuild runs.'''
+    try:
+        return JSONResponse(credshed().db.index_build_status())
+    except Exception as e:  # pragma: no cover
+        return JSONResponse({'building': False, 'error': f'{type(e).__name__}: {e}'})
 
 
 @app.get('/api/health')

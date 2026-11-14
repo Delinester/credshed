@@ -125,6 +125,22 @@
   .xbtn{margin-left:auto; flex:none}
   .warn{color:var(--s4)}
 
+  /* secondary-index rebuild progress line */
+  .idxbuild{margin:14px 0 4px; padding:11px 14px; border:1px solid var(--s4); border-radius:10px;
+    background:color-mix(in srgb, var(--s4) 10%, var(--surface)); color:var(--ink)}
+  .idxbuild .ib-row{display:flex; align-items:center; gap:9px; flex-wrap:wrap; font-size:13px}
+  .idxbuild .ib-pct{font-weight:700; color:var(--s4); font-variant-numeric:tabular-nums}
+  .idxbuild .ib-note{color:var(--ink-2); font-size:12px}
+  .idxbuild .ib-bar{margin-top:9px; height:7px; border-radius:999px; background:var(--surface-2); overflow:hidden}
+  .idxbuild .ib-fill{height:100%; border-radius:999px; background:var(--s4);
+    transition:width .6s ease; background-image:linear-gradient(90deg, color-mix(in srgb,var(--s4) 70%, #fff) 0%, var(--s4) 50%, color-mix(in srgb,var(--s4) 70%,#fff) 100%);
+    background-size:200% 100%; animation:ibshimmer 1.4s linear infinite}
+  .idxbuild .ib-fill.indeterminate{width:35% !important; animation:ibshimmer 1.4s linear infinite, ibslide 1.6s ease-in-out infinite}
+  .idxbuild .ib-spin{width:12px; height:12px; border-radius:50%; border:2px solid color-mix(in srgb,var(--s4) 35%,transparent); border-top-color:var(--s4); display:inline-block; animation:ibspin .8s linear infinite; flex:none}
+  @keyframes ibspin{to{transform:rotate(360deg)}}
+  @keyframes ibshimmer{to{background-position:-200% 0}}
+  @keyframes ibslide{0%{margin-left:0}50%{margin-left:65%}100%{margin-left:0}}
+
   /* data search + records */
   .tool{background:var(--surface); border:1px solid var(--border); border-radius:var(--r); box-shadow:var(--shadow); padding:14px 16px; margin-top:12px}
   .srow{display:flex; gap:9px; flex-wrap:wrap; align-items:center}
@@ -178,6 +194,7 @@
 </header>
 
 <div class="wrap">
+  <div id="idxBuild" class="idxbuild" hidden></div>
   <div class="ttl">Search records</div>
   <section class="tool" id="searchTool">
     <form class="srow" id="searchForm" autocomplete="off">
@@ -435,6 +452,7 @@ async function getFull(metric, target){
 
 function render(d){
   CURRENT=d;
+  renderIndexBuild(d.index_build);   // secondary-index rebuild progress line (after a bulk import)
   const t=d.totals;
   // Two honest headlines: UNIQUE accounts (deduplicated documents) and TOTAL records
   // (the sum across sources — an account found in N breaches counts N times).  The
@@ -776,7 +794,7 @@ function renderRecords(d){
   const RENDER_CAP = 2000;   // keep every fetched row in LAST_RESULTS (exportable); only
                              // render a slice so a huge result set can't freeze the table
   const n=d.count||0, capped = (d.has_more!==undefined) ? !!d.has_more : (n>=d.limit);
-  const trunc = d.truncated? ` · <span class="warn">scan timed out; partial — narrow the query or build an index</span>`:'';
+  const trunc = d.truncated? ` · <span class="warn">${d.note? esc(d.note) : 'scan timed out; partial — narrow the query or build an index'}</span>`:'';
   const capMsg = !capped ? ''
     : d.limit>=100000 ? ` · <span class="warn">reached the 100k-record cap — narrow the query to reach the rest</span>`
     : ` · <span class="warn">hit the ${fmt(d.limit)}-record fetch limit — raise “Max results” (up to All / 100k) to find more</span>`;
@@ -1127,6 +1145,37 @@ function renderAccountModal(d){
   const cB=back.querySelector('#acCsv'), jB=back.querySelector('#acJson');
   if(cB) cB.onclick=()=>download(`credshed_${slug}_${Date.now()}.csv`, '﻿'+accountToCSV(d), 'text/csv');
   if(jB) jB.onclick=()=>download(`credshed_${slug}_${Date.now()}.json`, JSON.stringify(d,null,2), 'application/json');
+}
+
+// secondary-index rebuild progress line — shown after a bulk --reindex import, while
+// the 6 field indexes are rebuilt in one big collection scan (field searches are slow
+// until it finishes).  Polls /api/index_build every 15s and auto-hides when done.
+function renderIndexBuild(ib){
+  const el=$('#idxBuild'); if(!el) return;
+  ib = ib||{};
+  if(ib.building){
+    const pct = (ib.percent!=null && isFinite(ib.percent)) ? Math.max(0,Math.min(100,ib.percent)) : null;
+    const eta = (ib.eta_min!=null && isFinite(ib.eta_min)) ? ` · ~${fmt(ib.eta_min)} min left` : '';
+    const docs = (ib.total) ? ` · ${fmt(ib.done||0)} / ${fmt(ib.total)} records` : '';
+    el.hidden=false;
+    el.innerHTML =
+      `<div class="ib-row"><span class="ib-spin"></span><b>Secondary indexes rebuilding</b>`
+      + (pct!=null?` <span class="ib-pct">${pct}%</span>`:'')
+      + `<span class="ib-note">field searches (service / password / username / phone / hash) are slow until this finishes${eta}${docs}</span></div>`
+      + `<div class="ib-bar"><div class="ib-fill${pct!=null?'':' indeterminate'}" style="${pct!=null?`width:${pct}%`:''}"></div></div>`;
+    if(LIVE && !window.__idxPoll) window.__idxPoll=setInterval(refreshIndexBuild, 15000);
+  } else {
+    if(!el.hidden){ el.hidden=true; el.innerHTML=''; }
+    if(window.__idxPoll){ clearInterval(window.__idxPoll); window.__idxPoll=null; }
+  }
+}
+async function refreshIndexBuild(){
+  if(!LIVE){ renderIndexBuild({building:false}); return; }
+  try{
+    const r=await fetch('api/index_build'); const ib=await r.json();
+    renderIndexBuild(ib);
+    if(CURRENT) CURRENT.index_build=ib;
+  }catch(e){ /* leave the last state; try again next tick */ }
 }
 
 function setStatus(live){ LIVE=live;

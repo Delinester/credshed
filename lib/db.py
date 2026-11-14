@@ -146,6 +146,45 @@ class DB():
         return int(num_accounts_in_db)
 
 
+    # query types whose search is only fast once the per-field secondary index exists
+    INDEX_BACKED_TYPES = {'username', 'password', 'phone', 'service', 'hash', 'misc'}
+
+    def index_build_status(self):
+        '''
+        Whether a secondary-index build is in progress, and how far along.  After a
+        bulk `--reindex` load the six indexes are rebuilt in ONE collection scan over
+        the whole DB (tens of minutes at 600M+); until it finishes, every field search
+        (username/password/phone/service/hash/misc) is a collection scan and will time
+        out.  This lets the search path say so clearly instead of just hanging.
+
+        Returns {'building': bool, 'percent': int|None, 'eta_min': int|None,
+        'done': int, 'total': int}.  Cheap (one admin currentOp) and cached ~15s so it
+        can be called on every timed-out search without load.
+        '''
+        import time
+        now = time.time()
+        cached = getattr(self, '_idx_status_cache', None)
+        if cached and (now - cached[0]) < 15:
+            return cached[1]
+        status = {'building': False, 'percent': None, 'eta_min': None, 'done': 0, 'total': 0}
+        try:
+            co = self.db.client.admin.command('currentOp', True)
+            for op in co.get('inprog', []):
+                if 'Index Build' in str(op.get('msg', '')):
+                    pr = op.get('progress', {}) or {}
+                    done, total = int(pr.get('done', 0) or 0), int(pr.get('total', 0) or 0)
+                    secs = float(op.get('secs_running', 0) or 0)
+                    pct = int(100 * done / total) if total else None
+                    rate = (done / secs) if secs else 0
+                    eta = int((total - done) / rate / 60) if rate else None
+                    status = {'building': True, 'percent': pct, 'eta_min': eta,
+                              'done': done, 'total': total}
+                    break
+        except Exception as e:
+            log.debug(f'index_build_status: {e}')
+        self._idx_status_cache = (now, status)
+        return status
+
 
     def source_count(self):
 
@@ -1178,8 +1217,22 @@ class DB():
                     continue
         except pymongo.errors.ExecutionTimeout:
             truncated = True
+        note = ''
+        if truncated and qt in self.INDEX_BACKED_TYPES:
+            # an indexed-field search only times out when its index is absent — almost
+            # always a post-bulk-load rebuild in progress.  Say so, with live progress.
+            st = self.index_build_status()
+            if st.get('building'):
+                pct = st.get('percent')
+                eta = st.get('eta_min')
+                note = ('Secondary indexes are rebuilding after a bulk import'
+                        + (f' ({pct}% done' + (f', ~{eta} min left)' if eta is not None else ')') if pct is not None else '')
+                        + f' — {qt} searches stay slow until it finishes.')
+            else:
+                note = (f'This {qt} search timed out. If a bulk import ran recently, the '
+                        f'{qt} index may still be rebuilding — field searches stay slow until it completes.')
         return {'query': str(keyword), 'type': qt, 'count': len(out),
-                'results': out, 'truncated': truncated, 'has_more': has_more}
+                'results': out, 'truncated': truncated, 'has_more': has_more, 'note': note}
 
     def search_combined(self, conditions, limit=100, max_time_ms=10000):
         '''
