@@ -245,6 +245,27 @@ def api_tld(zone: str, target: str = 'email', top: int = 200, sample: int = 30):
         return JSONResponse({'error': f'{e.__class__.__name__}: {e}'}, status_code=500)
 
 
+@app.get('/api/domain/{domain}')
+def api_domain(domain: str, sample: int = 30):
+    '''Domain exposure report: stats + breach sources + samples for one exact email domain.'''
+    sample = max(0, min(int(sample), 200))
+    key = ('__domain__', domain, sample)
+    now = time.time()
+    hit = _tld_cache.get(key)
+    if hit and (now - hit[0]) < CACHE_TTL:
+        return JSONResponse(hit[1])
+    try:
+        data = credshed().db.domain_detail(domain, sample=sample)
+        if len(_tld_cache) >= 256:
+            _tld_cache.pop(min(_tld_cache, key=lambda k: _tld_cache[k][0]), None)
+        _tld_cache[key] = (now, data)
+        return JSONResponse(data)
+    except CredShedError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
+    except Exception as e:  # pragma: no cover
+        return JSONResponse({'error': f'{e.__class__.__name__}: {e}'}, status_code=500)
+
+
 @app.get('/api/health')
 def api_health():
     try:

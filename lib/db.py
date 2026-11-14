@@ -902,6 +902,88 @@ class DB():
             'complete': complete,
         }
 
+    def domain_detail(self, domain, sample=30, sample_n=5000, max_ms=8000):
+        '''
+        "Domain exposure" report for ONE exact email domain (e.g. company.com) — the
+        count of breached accounts, what share expose a plaintext password / breached
+        service / hash, the passwords / usernames / services those accounts carry, WHICH
+        breach sources the domain appears in, and sample records.  This is the per-domain
+        view a DFIR investigator needs for a client assessment; the TLD drill-down covers
+        zones (.com), but a specific domain's accounts live under an _id prefix
+        '<reversed-domain>|...', so this matches on that (index-bounded) and estimates
+        from a bounded sample, like tld_detail, so it is fast at any domain size.
+        '''
+        from collections import Counter
+        domain = str(domain).strip().lower().lstrip('@').lstrip('.')
+        if not domain or not validation.is_domain(domain):
+            raise CredShedError(f'Invalid domain: {domain!r}')
+        coll = self.accounts
+        rev = re.escape(domain[::-1])
+        match = {'_id': {'$regex': rf'^{rev}\|'}}          # exact domain, uses the _id index
+        sample, sample_n = int(sample), int(sample_n)
+
+        pw, usr, svc, srcs = Counter(), Counter(), Counter(), Counter()
+        cov = {'with_password': 0, 'with_service': 0, 'with_hash': 0}
+        lt = {'email': 0, 'username': 0, 'phone': 0}
+        samples, n = [], 0
+        try:
+            for d in coll.find(match, {'e': 1, 'u': 1, 'p': 1, 'h': 1, 'm': 1, 't': 1, 'v': 1, 's': 1},
+                               limit=sample_n, max_time_ms=max_ms):
+                n += 1
+                if d.get('p'): pw[d['p']] += 1; cov['with_password'] += 1
+                if d.get('u'): usr[d['u']] += 1; lt['username'] += 1
+                if d.get('h'): cov['with_hash'] += 1
+                if d.get('v'): svc[d['v'][::-1]] += 1; cov['with_service'] += 1
+                if d.get('e'): lt['email'] += 1
+                if d.get('t'): lt['phone'] += 1
+                for sid in (d.get('s') or []):
+                    srcs[sid] += 1
+                if len(samples) < sample:
+                    try: samples.append(Account.from_document(d).json)
+                    except Exception: pass
+        except pymongo.errors.ExecutionTimeout:
+            pass
+
+        estimated = (n >= sample_n)
+        total = n
+        if estimated:
+            total = 0
+            try:
+                gs = self.global_summary(top_n=2000, zones_top=3000)
+                for dname, c in (gs.get('top_domains') or []):
+                    if dname == domain:
+                        total = int(c); break
+            except Exception:
+                pass
+            if not total:
+                try:
+                    total = coll.count_documents(match, maxTimeMS=max_ms)
+                except pymongo.errors.PyMongoError:
+                    total = n
+        scale = (total / n) if n else 0
+
+        # map the breach source_ids this domain appears in to their names
+        src_names = {}
+        if srcs:
+            try:
+                for s in self.sources.find({'source_id': {'$in': list(srcs)}},
+                                           {'source_id': 1, 'name': 1}):
+                    src_names[s.get('source_id')] = str(s.get('name', '')).split('/')[-1] or s.get('source_id')
+            except pymongo.errors.PyMongoError:
+                pass
+
+        return {
+            'domain': domain, 'total_accounts': total, 'estimated': estimated, 'sampled': n,
+            'coverage': {k: int(round(v * scale)) for k, v in cov.items()},
+            'login_types': {k: int(round(v * scale)) for k, v in lt.items()},
+            'top_passwords': pw.most_common(200),
+            'top_usernames': usr.most_common(200),
+            'top_services': [(k[::-1], c) for k, c in svc.most_common(200)],
+            'sources': sorted(((src_names.get(sid, sid), c) for sid, c in srcs.items()),
+                              key=lambda x: x[1], reverse=True),
+            'sample': samples, 'partial': False,
+        }
+
     def search_records(self, keyword, query_type='auto', limit=100, max_time_ms=10000, mode='exact'):
         '''
         Thin wrapper used by the data-search API: validate the query type, run the
