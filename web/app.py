@@ -266,6 +266,29 @@ def api_domain(domain: str, sample: int = 30):
         return JSONResponse({'error': f'{e.__class__.__name__}: {e}'}, status_code=500)
 
 
+@app.get('/api/account/{email:path}')
+def api_account(email: str, sample: int = 40):
+    '''Account exposure profile: every breach record for one exact email, aggregated
+    into reused passwords, breached services, breach sources and phone/hash — the
+    per-victim credential-stuffing view (index-backed on the _id email-hash prefix).'''
+    sample = max(0, min(int(sample), 200))
+    key = ('__acct__', email, sample)
+    now = time.time()
+    hit = _tld_cache.get(key)
+    if hit and (now - hit[0]) < CACHE_TTL:
+        return JSONResponse(hit[1])
+    try:
+        data = credshed().db.account_exposure(email, sample=sample)
+        if len(_tld_cache) >= 256:
+            _tld_cache.pop(min(_tld_cache, key=lambda k: _tld_cache[k][0]), None)
+        _tld_cache[key] = (now, data)
+        return JSONResponse(data)
+    except CredShedError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
+    except Exception as e:  # pragma: no cover
+        return JSONResponse({'error': f'{e.__class__.__name__}: {e}'}, status_code=500)
+
+
 _compromised_cache = {'t': 0.0, 'data': None, 'key': None}
 COMPROMISED_TTL = 600   # expensive + non-deterministic (random sample) -> cache 10 min
 

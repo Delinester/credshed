@@ -1054,6 +1054,89 @@ class DB():
             })
         return {'accounts': accounts, 'sampled': int(sample_size), 'min_breaches': int(min_breaches)}
 
+    def account_exposure(self, email, max_records=5000, sample=40, max_ms=8000):
+        '''
+        "Account exposure profile" for ONE exact email address — the per-victim,
+        credential-stuffing view a DFIR investigator needs: every breach record tied
+        to the address, aggregated into which passwords it REUSED, on which services
+        it was breached, which breach datasets it appears in, and any phone/hash on
+        file.  (domain_detail profiles a whole organisation; this profiles one person.)
+
+        All of one email's records share the _id prefix '<reversed-domain>|<8-char
+        email-hash>' — the first 6 bytes of every record hash are sha1(local-part) —
+        so this is an INDEX-BACKED prefix scan on _id, fast at any DB size and for any
+        domain (gmail or a tiny company alike), not a collection scan.  The 48-bit
+        email-hash can alias a different local-part under the same domain, so each
+        record is post-verified against the exact address (same guard as email search).
+        '''
+        import base64, hashlib
+        from collections import Counter
+        try:
+            acct = Account(email=str(email).strip())
+        except AccountCreationError:
+            raise CredShedError(f'Invalid email: {email!r}')
+        local, domain = acct._email, acct.domain
+        if not local or not domain:
+            raise CredShedError(f'Invalid email: {email!r}')
+        email_norm = f'{local}@{domain}'
+        email_hash = base64.b64encode(hashlib.sha1(local.encode()).digest()[:6]).decode()
+        prefix = re.escape(domain[::-1] + '|' + email_hash)
+        match = {'_id': {'$regex': '^' + prefix}}
+
+        pw, svc, phones = Counter(), Counter(), Counter()
+        pw_services = {}            # password -> set of services it was reused on
+        src_ids, hashes, samples, n = set(), [], [], 0
+        try:
+            for d in self.accounts.find(match, {'e': 1, 'u': 1, 'p': 1, 'h': 1, 'm': 1, 't': 1, 'v': 1, 's': 1},
+                                        limit=int(max_records), max_time_ms=int(max_ms)):
+                if d.get('e') != local:          # 48-bit prefix alias: different local-part, same domain
+                    continue
+                n += 1
+                host = d['v'][::-1] if d.get('v') else None
+                if d.get('p'):
+                    pw[d['p']] += 1
+                    if host:
+                        pw_services.setdefault(d['p'], set()).add(host)
+                if host: svc[host] += 1
+                if d.get('t'): phones[d['t']] += 1
+                for h in (d.get('h') or []):
+                    if h not in hashes: hashes.append(h)
+                for s in (d.get('s') or []): src_ids.add(s)
+                if len(samples) < int(sample):
+                    try: samples.append(Account.from_document(d).json)
+                    except Exception: pass
+        except pymongo.errors.ExecutionTimeout:
+            pass                                 # best-effort — return what we gathered
+
+        names = []
+        if src_ids:
+            try:
+                for s in self.sources.find({'source_id': {'$in': list(src_ids)}}, {'source_id': 1, 'name': 1}):
+                    names.append(str(s.get('name', '')).split('/')[-1] or str(s.get('source_id')))
+            except pymongo.errors.PyMongoError:
+                pass
+
+        passwords = pw.most_common(200)
+        top_pw = passwords[0][0] if passwords else None
+        return {
+            'email': email_norm,
+            'total_records': n,
+            'breach_count': len(src_ids),                 # distinct breach datasets (exposure breadth)
+            'breach_sources': sorted(set(names)),
+            'distinct_passwords': len(pw),
+            'passwords': passwords,                       # (password, #records) — reuse is count>1
+            'distinct_services': len(svc),
+            'services': svc.most_common(500),
+            'phones': phones.most_common(10),
+            'hashes': hashes[:50],
+            'top_password': top_pw,
+            # the single most-reused password and how many DISTINCT services it unlocks —
+            # the crux of credential-stuffing risk for this victim.
+            'top_password_services': (sorted(pw_services.get(top_pw, ())) if top_pw else []),
+            'sample': samples,
+            'truncated': (n >= int(max_records)),
+        }
+
     def search_records(self, keyword, query_type='auto', limit=100, max_time_ms=10000, mode='exact'):
         '''
         Thin wrapper used by the data-search API: validate the query type, run the

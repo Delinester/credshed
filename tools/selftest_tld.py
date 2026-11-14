@@ -129,6 +129,54 @@ def main():
         except Exception as e:
             check(f'domain_detail rejects {bad[:10]!r}', False, f'wrong error {type(e).__name__}')
 
+    # ---- account exposure profile (account_exposure) --------------------
+    print('-- account_exposure (per-email profile) --')
+    import re as _re
+    probe_email, probe_prefix = None, None
+    for d in db.accounts.aggregate([{'$sample': {'size': 4000}},
+                                    {'$match': {'e': {'$type': 'string'}}},
+                                    {'$project': {'e': 1, '_id': 1}}], allowDiskUse=True):
+        _id = d.get('_id', '')
+        if '|' in _id and d.get('e'):
+            rdom, rest = _id.split('|', 1)
+            probe_email = f"{d['e']}@{rdom[::-1]}"
+            probe_prefix = rdom + '|' + rest[:8]   # reversed-domain + 8-char email-hash (same for all this email's records)
+            break
+    if probe_email:
+        ae = db.account_exposure(probe_email)
+        local = ae['email'].split('@')[0]
+        # brute-force via the EMAIL-HASH-specific _id prefix (index range, fast at any
+        # scale) + the exact-local post-filter — independent of account_exposure's rollup
+        brute = db.accounts.count_documents({'e': local, '_id': {'$regex': '^' + _re.escape(probe_prefix)}})
+        check(f'account_exposure returns records [{probe_email[:28]}]', ae['total_records'] > 0,
+              f"records={ae['total_records']}")
+        check('account total_records == brute-force _id-prefix count',
+              ae['total_records'] == brute, f"got={ae['total_records']} brute={brute}")
+        check('sum(password counts) == total_records (every record accounted for OR no-pw)',
+              sum(c for _, c in ae['passwords']) <= ae['total_records'])
+        check('account has reuse/profile keys',
+              all(k in ae for k in ('distinct_passwords', 'distinct_services', 'breach_count',
+                                    'breach_sources', 'top_password', 'top_password_services')))
+    for bad in ['', 'not-an-email', 'nodomain@', '@nolocal.com']:
+        try:
+            db.account_exposure(bad); check(f'account_exposure rejects {bad[:12]!r}', False, 'no error')
+        except CredShedError:
+            check(f'account_exposure rejects {bad[:12]!r}', True)
+        except Exception as e:
+            check(f'account_exposure rejects {bad[:12]!r}', False, f'wrong error {type(e).__name__}')
+    # injection-safety: regex metachars / operator-dict payloads must be sanitised (not
+    # executed) and never raise a non-CredShed error — clean_email strips them, re.escape
+    # guards the prefix, so a crafted address resolves to a harmless valid-or-rejected one
+    for inj in ['x.com|y@a.com', '.*@gmail.com', '$where@x.com', "a';b@x.com"]:
+        try:
+            r = db.account_exposure(inj)
+            check(f'account_exposure injection-safe {inj[:12]!r}',
+                  isinstance(r, dict) and r.get('total_records', 0) >= 0)
+        except CredShedError:
+            check(f'account_exposure injection-safe {inj[:12]!r}', True)   # rejected is also fine
+        except Exception as e:
+            check(f'account_exposure injection-safe {inj[:12]!r}', False, f'raised {type(e).__name__}')
+
     print(f'\n{len(PASS)} passed, {len(FAIL)} failed')
     return 1 if FAIL else 0
 

@@ -239,7 +239,7 @@
       </div>
       <div style="display:flex; gap:8px; margin:10px 0 2px; flex-wrap:wrap; align-items:center">
         <input id="geoQ" type="search" autocomplete="off" list="geoQList" spellcheck="false"
-               placeholder="Full statistics for a TLD zone, country, or domain — e.g. .uz, co.uk, Uzbekistan, company.com"
+               placeholder="Full stats for a TLD zone, country, domain, or email — e.g. .uz, Uzbekistan, company.com, user@gmail.com"
                style="flex:1; min-width:220px; padding:8px 11px; border:1px solid var(--border); border-radius:8px; background:var(--surface-2); color:var(--ink); font:inherit">
         <datalist id="geoQList"></datalist>
         <button id="geoQBtn">View full stats ›</button>
@@ -486,7 +486,9 @@ function render(d){
       (r.countries||[]).forEach(c=>{const n=Array.isArray(c)?c[0]:c; names.add(n); known.add(String(n).toLowerCase());});
       (r.zones||[]).forEach(z=>{const n=Array.isArray(z)?z[0]:z; names.add('.'+n); known.add(String(n).toLowerCase());}); });
     dl.innerHTML=[...names].slice(0,800).map(n=>`<option value="${esc(n)}">`).join('');
-    const go=()=>{ const raw=q.value.trim(); if(!raw) return; const v=raw.toLowerCase().replace(/^[.@]+/,'');
+    const go=()=>{ const raw=q.value.trim(); if(!raw) return;
+      if(raw.includes('@')){ openAccountReport(raw); return; }      // a full email address -> account exposure profile
+      const v=raw.toLowerCase().replace(/^[.@]+/,'');
       if(known.has(v)) openTldDetail(v, window.__geo||'email');     // a known TLD zone or country
       else if(v.includes('.')) openDomainReport(v);                // a specific email domain (e.g. company.com)
       else openTldDetail(v, window.__geo||'email'); };             // bare word -> try as a zone
@@ -505,11 +507,11 @@ function render(d){
         if(d.error){ list.innerHTML=`<p class="hint err">${esc(d.error)}</p>`; }
         else{ const a=d.accounts||[];
           list.innerHTML=a.length? a.map(x=>
-            `<div class="li clk" data-pv="${esc(x.email)}" title="View this account's records" style="justify-content:space-between;cursor:pointer;gap:12px">`+
+            `<div class="li clk" data-pv="${esc(x.email)}" title="View this account's exposure profile" style="justify-content:space-between;cursor:pointer;gap:12px">`+
             `<span style="min-width:0;overflow:hidden;text-overflow:ellipsis">${esc(x.email)}</span>`+
             `<span class="bpct" style="flex:none"><b class="tnum">${x.breaches}</b> breaches · ${esc((x.sources||[]).slice(0,4).join(', '))}</span></div>`).join('')
             : '<p class="note">No account in 4+ breaches surfaced in the sample.</p>';
-          list.querySelectorAll('.clk').forEach(el=>el.onclick=()=>pivotTo('email', el.dataset.pv)); }
+          list.querySelectorAll('.clk').forEach(el=>el.onclick=()=>openAccountReport(el.dataset.pv)); }
       }catch(e){ list.innerHTML=`<p class="hint err">${esc(e.message)}</p>`; }
       btn.disabled=false; btn.textContent='Reload ↻';
     };
@@ -1038,14 +1040,92 @@ function renderDomainModal(d){
   const mbEl=back.querySelector('#dMost');
   if(mbEl){
     mbEl.innerHTML=(d.most_breached||[]).map(a=>
-      `<div class="li clk" data-pv="${esc(a.email)}" title="View this account's records" style="justify-content:space-between;cursor:pointer;gap:12px">`+
+      `<div class="li clk" data-pv="${esc(a.email)}" title="View this account's exposure profile" style="justify-content:space-between;cursor:pointer;gap:12px">`+
       `<span style="min-width:0;overflow:hidden;text-overflow:ellipsis">${esc(a.email)}</span>`+
       `<span class="bpct" style="flex:none"><b class="tnum">${a.breaches}</b> breaches · ${esc((a.sources||[]).slice(0,4).join(', '))}${(a.sources||[]).length>4?'…':''}</span></div>`).join('');
-    mbEl.querySelectorAll('.clk').forEach(el=>el.onclick=()=>pivotTo('email', el.dataset.pv));
+    mbEl.querySelectorAll('.clk').forEach(el=>el.onclick=()=>openAccountReport(el.dataset.pv));
   }
   const slug=`domain_${String(domain).replace(/[^a-z0-9]+/gi,'_')}`;
   const cB=back.querySelector('#domCsv'), jB=back.querySelector('#domJson');
   if(cB) cB.onclick=()=>download(`credshed_${slug}_${Date.now()}.csv`, '﻿'+domainToCSV(d), 'text/csv');
+  if(jB) jB.onclick=()=>download(`credshed_${slug}_${Date.now()}.json`, JSON.stringify(d,null,2), 'application/json');
+}
+
+// ---- account exposure profile (one exact email) -----------------------------
+async function openAccountReport(email){
+  const tok=++TLD_TOKEN;
+  if(!LIVE){ renderAccountModal({email, offline:true}); return; }
+  renderAccountModal({email, loading:true});
+  try{
+    const r=await fetch(`api/account/${encodeURIComponent(email)}?sample=40`);
+    const d=await r.json();
+    if(tok!==TLD_TOKEN) return;
+    renderAccountModal(d.error?{email, error:d.error}:d);
+  }catch(e){ if(tok===TLD_TOKEN) renderAccountModal({email, error:e.message}); }
+}
+function accountToCSV(d){
+  const q=v=>{ v=(v==null?'':String(v)); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
+  const L=['category,value,count'];
+  L.push(`summary,email,${q(d.email)}`); L.push(`summary,total_records,${d.total_records||0}`);
+  L.push(`summary,breach_count,${d.breach_count||0}`); L.push(`summary,distinct_passwords,${d.distinct_passwords||0}`);
+  L.push(`summary,distinct_services,${d.distinct_services||0}`);
+  const add=(cat,list)=>(list||[]).forEach(e=>{const v=Array.isArray(e)?e[0]:e,c=Array.isArray(e)?e[1]:'';L.push(`${cat},${q(v)},${c}`);});
+  add('password', d.passwords); add('service', d.services); add('phone', d.phones);
+  (d.breach_sources||[]).forEach(s=>L.push(`breach_source,${q(s)},`));
+  (d.hashes||[]).forEach(h=>L.push(`hash,${q(h)},`));
+  return L.join('\n');
+}
+function renderAccountModal(d){
+  removeModals();
+  const email=d.email||'';
+  const back=document.createElement('div'); back.className='modal-backdrop';
+  back.innerHTML=`<div class="modal" role="dialog" aria-modal="true" aria-label="Account exposure">
+    <div class="modal-head"><div style="min-width:0">
+      <h2 style="overflow:hidden;text-overflow:ellipsis">${esc(email)} <span style="color:var(--muted);font-size:12.5px;font-weight:400">account exposure</span></h2>
+      <div class="meta" id="acMeta"></div></div>
+      <div style="display:flex;gap:8px;align-items:center;flex:none">
+        <button class="xbtn2" id="acCsv" title="Export this account profile as CSV">⤓ CSV</button><button class="xbtn2" id="acJson" title="Export as JSON">⤓ JSON</button>
+        <button class="xbtn" id="mClose">✕ Close</button></div></div>
+    <div class="modal-body" id="acBody"></div></div>`;
+  document.body.appendChild(back); document.body.style.overflow='hidden';
+  back.onclick=e=>{ if(e.target===back) closeModal(); };
+  back.querySelector('#mClose').onclick=closeModal;
+  const body=back.querySelector('#acBody');
+  if(d.loading){ body.innerHTML='<p class="hint">Building exposure profile…</p>'; return; }
+  if(d.offline){ body.innerHTML='<p class="hint warn">The account exposure profile needs the live backend.</p>'; return; }
+  if(d.error){ body.innerHTML=`<p class="hint err">${esc(d.error)}</p>`; return; }
+  const rec=d.total_records||0, dp=d.distinct_passwords||0, ds=d.distinct_services||0;
+  const reuseN=(d.top_password_services||[]).length;
+  back.querySelector('#acMeta').innerHTML=`<span>${fmt(rec)} record${rec!=1?'s':''}</span><span>·</span><span>${fmt((d.breach_sources||[]).length)} breach source(s)</span><span>·</span><span>${fmt(ds)} services</span>${d.truncated?'<span>·</span><span class="warn">capped</span>':''}`;
+  const tiles=`<div class="mini">
+    <div class="m"><div class="k">Breach records</div><div class="v tnum">${bigVal(rec)}</div></div>
+    <div class="m"><div class="k">Distinct passwords</div><div class="v tnum">${bigVal(dp)}</div><div class="k">${rec>dp?'reuse detected':'no reuse'}</div></div>
+    <div class="m"><div class="k">Breached services</div><div class="v tnum">${bigVal(ds)}</div></div>
+    <div class="m"><div class="k">Breach datasets</div><div class="v tnum">${bigVal(d.breach_count||0)}</div></div>
+    <div class="m"><div class="k">Phone / Hash</div><div class="v tnum" style="font-size:15px">${bigVal((d.phones||[]).length)} / ${bigVal((d.hashes||[]).length)}</div></div>
+  </div>`;
+  // credential-stuffing callout: the single most-reused password and its blast radius
+  const risk=(d.top_password && reuseN>1)
+    ? `<p class="hint warn" style="margin:0 0 12px">⚠ Credential-stuffing risk — password <b>${esc(d.top_password)}</b> is reused across <b>${fmt(reuseN)}</b> of this account's services${reuseN>6?' (e.g. '+esc((d.top_password_services||[]).slice(0,6).join(', '))+'…)':': '+esc((d.top_password_services||[]).join(', '))}.</p>`
+    : (rec>dp && dp>0 ? `<p class="hint" style="margin:0 0 12px;color:var(--muted)">This account reused passwords across breaches (${fmt(rec)} records, ${fmt(dp)} distinct passwords).</p>`
+                      : `<p class="hint" style="margin:0 0 12px;color:var(--muted)">${rec?'No password reuse detected across the records found.':'No breach records found for this exact address.'}</p>`);
+  body.innerHTML=risk+tiles+`
+    <section class="grid">
+      <div class="card"><h3>Passwords used</h3><p class="note">This account's passwords, by how many breach records carry each (reuse = count &gt; 1). Click to pivot.</p><div id="aPw"></div></div>
+      <div class="card"><h3>Breached on</h3><p class="note">Services/platforms this account was breached on. Click to view that service.</p><div id="aSvc"></div></div>
+      <div class="card"><h3>Breach sources</h3><p class="note">Datasets this address appears in.</p><div id="aSrc"></div></div>
+      ${((d.phones||[]).length||(d.hashes||[]).length)?`<div class="card"><h3>Phone / hash</h3><p class="note">Other identifiers on file for this address.</p><div id="aMisc"></div></div>`:''}
+    </section>
+    <div class="ttl">Records</div>
+    <div class="resultbox">${recordsTableHTML(d.sample)}</div>`;
+  dList(back.querySelector('#aPw'), d.passwords, 'var(--s2)', pw=>pivotTo('password', pw));
+  dList(back.querySelector('#aSvc'), d.services, 'var(--s3)', h=>pivotTo('service', h));
+  dList(back.querySelector('#aSrc'), (d.breach_sources||[]).map(s=>[s,'']), 'var(--s1)');
+  const miscEl=back.querySelector('#aMisc');
+  if(miscEl) dList(miscEl, (d.phones||[]).map(p=>['☎ '+p[0],p[1]]).concat((d.hashes||[]).map(h=>['# '+h,''])), 'var(--s4)');
+  const slug=`account_${String(email).replace(/[^a-z0-9]+/gi,'_')}`;
+  const cB=back.querySelector('#acCsv'), jB=back.querySelector('#acJson');
+  if(cB) cB.onclick=()=>download(`credshed_${slug}_${Date.now()}.csv`, '﻿'+accountToCSV(d), 'text/csv');
   if(jB) jB.onclick=()=>download(`credshed_${slug}_${Date.now()}.json`, JSON.stringify(d,null,2), 'application/json');
 }
 
