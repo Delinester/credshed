@@ -979,7 +979,9 @@ class DB():
             'top_passwords': pw.most_common(200),
             'top_usernames': usr.most_common(200),
             'top_services': [(k[::-1], c) for k, c in svc.most_common(200)],
-            'sources': sorted(((src_names.get(sid, sid), c) for sid, c in srcs.items()),
+            # only sources that still resolve to a real dataset (skip any dangling
+            # source id left by a removed source, so the report lists real breaches)
+            'sources': sorted(((src_names[sid], c) for sid, c in srcs.items() if sid in src_names),
                               key=lambda x: x[1], reverse=True),
             'sample': samples, 'partial': False,
         }
