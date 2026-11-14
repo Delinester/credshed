@@ -252,6 +252,16 @@
     </div>
   </section>
 
+  <div class="ttl">Threat intel</div>
+  <section class="grid">
+    <div class="card span2">
+      <div class="rowtop"><div><h3 style="margin-bottom:2px">Most-breached accounts</h3>
+        <p class="note">Email accounts seen in the most breaches — prime credential-stuffing targets. A representative sample (heavy query, loaded on demand); click an account to view its records.</p></div>
+        <button id="compLoad" style="margin-left:auto">Load ▾</button></div>
+      <div id="compList" style="margin-top:8px"></div>
+    </div>
+  </section>
+
   <div class="ttl">Top lists</div>
   <section class="grid">
     <div class="card"><h3>Breached services</h3><p class="note">Most common platforms in the data.</p><div id="topServices"></div></div>
@@ -475,6 +485,28 @@ function render(d){
       else if(v.includes('.')) openDomainReport(v);                // a specific email domain (e.g. company.com)
       else openTldDetail(v, window.__geo||'email'); };             // bare word -> try as a zone
     btn.onclick=go; q.onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); go(); } };
+  })();
+
+  // threat-intel: most-breached accounts, loaded on demand (heavy query, server-cached)
+  (function(){
+    const btn=$('#compLoad'), list=$('#compList'); if(!btn) return;
+    btn.onclick=async()=>{
+      if(!LIVE){ list.innerHTML='<p class="note warn">The most-breached list needs the live backend.</p>'; return; }
+      btn.disabled=true; btn.textContent='Loading…';
+      list.innerHTML='<p class="hint">Scanning for the most-breached accounts…</p>';
+      try{
+        const r=await fetch('api/compromised?limit=40&min_breaches=4'); const d=await r.json();
+        if(d.error){ list.innerHTML=`<p class="hint err">${esc(d.error)}</p>`; }
+        else{ const a=d.accounts||[];
+          list.innerHTML=a.length? a.map(x=>
+            `<div class="li clk" data-pv="${esc(x.email)}" title="View this account's records" style="justify-content:space-between;cursor:pointer;gap:12px">`+
+            `<span style="min-width:0;overflow:hidden;text-overflow:ellipsis">${esc(x.email)}</span>`+
+            `<span class="bpct" style="flex:none"><b class="tnum">${x.breaches}</b> breaches · ${esc((x.sources||[]).slice(0,4).join(', '))}</span></div>`).join('')
+            : '<p class="note">No account in 4+ breaches surfaced in the sample.</p>';
+          list.querySelectorAll('.clk').forEach(el=>el.onclick=()=>pivotTo('email', el.dataset.pv)); }
+      }catch(e){ list.innerHTML=`<p class="hint err">${esc(e.message)}</p>`; }
+      btn.disabled=false; btn.textContent='Reload ↻';
+    };
   })();
 
   // Sources: largest datasets first, collapsed to the top 12 with a Show-all toggle

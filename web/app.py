@@ -266,6 +266,30 @@ def api_domain(domain: str, sample: int = 30):
         return JSONResponse({'error': f'{e.__class__.__name__}: {e}'}, status_code=500)
 
 
+_compromised_cache = {'t': 0.0, 'data': None, 'key': None}
+COMPROMISED_TTL = 600   # expensive + non-deterministic (random sample) -> cache 10 min
+
+
+@app.get('/api/compromised')
+def api_compromised(limit: int = 50, min_breaches: int = 3):
+    '''Threat-intel overview: representative most-breached accounts (bounded random
+    sample, so results vary slightly; cached 10 min since it is a heavy query).'''
+    limit = max(1, min(int(limit), 200))
+    mb = max(2, min(int(min_breaches), 50))
+    now = time.time()
+    c = _compromised_cache
+    if c['data'] is not None and (now - c['t']) < COMPROMISED_TTL and c['key'] == (limit, mb):
+        return JSONResponse(c['data'])
+    try:
+        data = credshed().db.most_exposed_accounts(limit=limit, min_breaches=mb)
+        _compromised_cache.update({'t': now, 'data': data, 'key': (limit, mb)})
+        return JSONResponse(data)
+    except CredShedError as e:
+        return JSONResponse({'error': str(e)}, status_code=400)
+    except Exception as e:  # pragma: no cover
+        return JSONResponse({'error': f'{e.__class__.__name__}: {e}'}, status_code=500)
+
+
 @app.get('/api/health')
 def api_health():
     try:

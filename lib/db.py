@@ -998,6 +998,49 @@ class DB():
             'sample': samples, 'partial': False,
         }
 
+    def most_exposed_accounts(self, limit=50, sample_size=15000, min_breaches=3, max_ms=20000):
+        '''
+        Threat-intel overview: the email accounts seen in the MOST breaches.  A global
+        sort by breach count isn't indexable (the provenance array length has no index
+        over 500M+ docs), so this draws a bounded RANDOM sample and ranks within it —
+        it surfaces REPRESENTATIVE heavily-breached accounts, not a guaranteed absolute
+        top-N, and varies slightly between runs (the API caches it for stability).  Each
+        result carries the account's breach count and the breach datasets it appears in.
+        '''
+        try:
+            rows = list(self.accounts.aggregate([
+                {'$sample': {'size': int(sample_size)}},
+                {'$addFields': {'_sc': {'$size': {'$ifNull': ['$s', []]}}}},
+                {'$match': {'_sc': {'$gte': int(min_breaches)}, 'e': {'$type': 'string'}}},
+                {'$sort': {'_sc': -1}},
+                {'$limit': int(limit)},
+                {'$project': {'e': 1, 's': 1, '_sc': 1}},
+            ], maxTimeMS=int(max_ms), allowDiskUse=True))
+        except pymongo.errors.PyMongoError as e:
+            log.warning(f'most_exposed_accounts: {e}')
+            rows = []
+        allsrc = set()
+        for r in rows:
+            allsrc.update(r.get('s') or [])
+        names = {}
+        if allsrc:
+            try:
+                for s in self.sources.find({'source_id': {'$in': list(allsrc)}},
+                                           {'source_id': 1, 'name': 1}):
+                    names[s['source_id']] = str(s.get('name', '')).split('/')[-1]
+            except pymongo.errors.PyMongoError:
+                pass
+        accounts = []
+        for r in rows:
+            _id = r.get('_id', '') or ''
+            dom = _id.split('|')[0][::-1] if '|' in _id else ''
+            accounts.append({
+                'email': f"{r.get('e', '')}@{dom}",
+                'breaches': int(r.get('_sc', 0)),
+                'sources': [names[s] for s in (r.get('s') or []) if s in names][:12],
+            })
+        return {'accounts': accounts, 'sampled': int(sample_size), 'min_breaches': int(min_breaches)}
+
     def search_records(self, keyword, query_type='auto', limit=100, max_time_ms=10000, mode='exact'):
         '''
         Thin wrapper used by the data-search API: validate the query type, run the
