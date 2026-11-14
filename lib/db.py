@@ -926,6 +926,7 @@ class DB():
         cov = {'with_password': 0, 'with_service': 0, 'with_hash': 0}
         lt = {'email': 0, 'username': 0, 'phone': 0}
         samples, n = [], 0
+        breached = []     # (source_count, local_part, source_ids) for accounts in 2+ breaches
         try:
             for d in coll.find(match, {'e': 1, 'u': 1, 'p': 1, 'h': 1, 'm': 1, 't': 1, 'v': 1, 's': 1},
                                limit=sample_n, max_time_ms=max_ms):
@@ -936,8 +937,11 @@ class DB():
                 if d.get('v'): svc[d['v'][::-1]] += 1; cov['with_service'] += 1
                 if d.get('e'): lt['email'] += 1
                 if d.get('t'): lt['phone'] += 1
-                for sid in (d.get('s') or []):
+                sset = d.get('s') or []
+                for sid in sset:
                     srcs[sid] += 1
+                if len(sset) >= 2 and d.get('e'):      # an account seen in multiple breaches
+                    breached.append((len(sset), d['e'], sset))
                 if len(samples) < sample:
                     try: samples.append(Account.from_document(d).json)
                     except Exception: pass
@@ -972,8 +976,16 @@ class DB():
             except pymongo.errors.PyMongoError:
                 pass
 
+        # highest-exposure accounts: the domain's addresses seen in the most breaches
+        # (prime credential-stuffing targets for an investigator to prioritise)
+        breached.sort(key=lambda x: x[0], reverse=True)
+        most_breached = [{'email': f'{e}@{domain}', 'breaches': cnt,
+                          'sources': [src_names[s] for s in sset if s in src_names][:12]}
+                         for cnt, e, sset in breached[:25]]
+
         return {
             'domain': domain, 'total_accounts': total, 'estimated': estimated, 'sampled': n,
+            'most_breached': most_breached,
             'coverage': {k: int(round(v * scale)) for k, v in cov.items()},
             'login_types': {k: int(round(v * scale)) for k, v in lt.items()},
             'top_passwords': pw.most_common(200),

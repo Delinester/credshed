@@ -948,6 +948,7 @@ function domainToCSV(d){
   L.push(`summary,with_password,${cov.with_password||0}`); L.push(`summary,with_service,${cov.with_service||0}`); L.push(`summary,with_hash,${cov.with_hash||0}`);
   const add=(cat,list)=>(list||[]).forEach(e=>{const v=Array.isArray(e)?e[0]:e,c=Array.isArray(e)?e[1]:'';L.push(`${cat},${q(v)},${c}`);});
   add('password', d.top_passwords); add('service', d.top_services); add('username', d.top_usernames); add('breach_source', d.sources);
+  (d.most_breached||[]).forEach(a=>L.push(`most_exposed_account,${q(a.email)},${a.breaches}`));
   return L.join('\n');
 }
 function renderDomainModal(d){
@@ -988,12 +989,22 @@ function renderDomainModal(d){
       <div class="card"><h3>Usernames</h3><p class="note">Most common usernames.</p><div id="dUsr"></div></div>
       <div class="card"><h3>Breach sources</h3><p class="note">Datasets this domain appears in.</p><div id="dSrc"></div></div>
     </section>
+    ${(d.most_breached&&d.most_breached.length)?`<div class="ttl">Most-exposed accounts</div>
+    <div class="card"><p class="note">Addresses on this domain seen in the most breaches — prime credential-stuffing targets. Click one to view its records.</p><div id="dMost"></div></div>`:''}
     <div class="ttl">Sample records</div>
     <div class="resultbox">${recordsTableHTML(d.sample)}</div>`;
   dList(back.querySelector('#dPw'), d.top_passwords, 'var(--s2)', pw=>pivotTo('password', pw));
   dList(back.querySelector('#dSvc'), d.top_services, 'var(--s3)', h=>pivotTo('service', h));
   dList(back.querySelector('#dUsr'), d.top_usernames, 'var(--s4)', u=>pivotTo('username', u));
   dList(back.querySelector('#dSrc'), d.sources, 'var(--s1)');
+  const mbEl=back.querySelector('#dMost');
+  if(mbEl){
+    mbEl.innerHTML=(d.most_breached||[]).map(a=>
+      `<div class="li clk" data-pv="${esc(a.email)}" title="View this account's records" style="justify-content:space-between;cursor:pointer;gap:12px">`+
+      `<span style="min-width:0;overflow:hidden;text-overflow:ellipsis">${esc(a.email)}</span>`+
+      `<span class="bpct" style="flex:none"><b class="tnum">${a.breaches}</b> breaches · ${esc((a.sources||[]).slice(0,4).join(', '))}${(a.sources||[]).length>4?'…':''}</span></div>`).join('');
+    mbEl.querySelectorAll('.clk').forEach(el=>el.onclick=()=>pivotTo('email', el.dataset.pv));
+  }
   const slug=`domain_${String(domain).replace(/[^a-z0-9]+/gi,'_')}`;
   const cB=back.querySelector('#domCsv'), jB=back.querySelector('#domJson');
   if(cB) cB.onclick=()=>download(`credshed_${slug}_${Date.now()}.csv`, '﻿'+domainToCSV(d), 'text/csv');
