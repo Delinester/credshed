@@ -209,8 +209,10 @@
       <button type="submit" class="go">Search ›</button>
     </form>
     <div id="andConds"></div>
-    <div class="srow" style="margin-top:9px;gap:8px">
-      <button type="button" class="xbtn2" id="addAnd">+ AND condition</button>
+    <div class="srow" style="margin-top:9px;gap:8px;align-items:center">
+      <button type="button" class="xbtn2" id="addAnd">+ condition</button>
+      <label class="chk" id="boolOpWrap" hidden style="gap:6px" title="AND = all conditions on one account · OR = match any condition">combine with
+        <select id="boolOp"><option value="and">AND</option><option value="or">OR</option></select></label>
       <button type="button" class="xbtn2" id="bulkToggle">⇅ Bulk lookup</button>
     </div>
     <div id="bulkPanel" class="tool" hidden style="margin-top:10px;padding:13px 14px;background:var(--surface-2)">
@@ -812,6 +814,16 @@ function renderRecords(d){
 
 const SEARCH_TYPES=[['auto','Auto-detect'],['email','Email'],['domain','Domain'],['tld','TLD / zone'],['username','Username'],['password','Password'],['misc','Name / misc'],['hash','Hash'],['phone','Phone'],['service','Service']];
 const typeOptions=sel=>SEARCH_TYPES.map(([v,l])=>`<option value="${v}"${v===sel?' selected':''}>${l}</option>`).join('');
+// fields where a "contains" (substring) search is meaningful; the rest are exact/prefix only
+const CONTAINS_TYPES=new Set(['domain','username','password','misc','service']);
+// enable/disable a contains checkbox for the chosen field (and uncheck it when disabled)
+function syncContains(typeSel, cb){
+  if(!typeSel||!cb) return;
+  const ok=CONTAINS_TYPES.has(typeSel.value);
+  cb.disabled=!ok;
+  if(!ok) cb.checked=false;
+  const lab=cb.closest('label'); if(lab){ lab.style.opacity=ok?'':'0.4'; lab.title=ok?'Substring match (slower; scans the field)':'“contains” is not available for this field (exact / prefix only)'; }
+}
 
 function gatherConditions(){
   const out=[]; const q=$('#qText').value.trim();
@@ -822,14 +834,25 @@ function gatherConditions(){
   });
   return out;
 }
+function curBoolOp(){ const s=$('#boolOp'); return (s&&s.value==='or')?'or':'and'; }
+function refreshBoolUI(){
+  const rows=document.querySelectorAll('#andConds .androw');
+  const wrap=$('#boolOpWrap'); if(wrap) wrap.hidden = rows.length===0;   // only relevant with 2+ conditions
+  const lbl=curBoolOp().toUpperCase();
+  document.querySelectorAll('#andConds .androw .andlbl').forEach(el=>el.textContent=lbl);
+}
 function addAndRow(){
   const div=document.createElement('div'); div.className='androw';
-  div.innerHTML=`<span class="andlbl">AND</span><select class="andType">${typeOptions('service')}</select>`+
+  div.innerHTML=`<span class="andlbl">${curBoolOp().toUpperCase()}</span><select class="andType">${typeOptions('service')}</select>`+
     `<input type="text" class="andText q" placeholder="value"><label class="chk"><input type="checkbox" class="andContains"> contains</label>`+
     `<button type="button" class="xbtn2 andRemove" title="Remove condition">✕</button>`;
-  div.querySelector('.andRemove').onclick=()=>div.remove();
+  const typeSel=div.querySelector('.andType'), cb=div.querySelector('.andContains');
+  typeSel.addEventListener('change', ()=>syncContains(typeSel, cb));
+  syncContains(typeSel, cb);                               // default 'service' supports contains
+  div.querySelector('.andRemove').onclick=()=>{ div.remove(); refreshBoolUI(); };
   div.querySelector('.andText').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); runSearch(); }});
   $('#andConds').appendChild(div); div.querySelector('.andText').focus();
+  refreshBoolUI();
 }
 
 async function runSearch(){
@@ -842,7 +865,7 @@ async function runSearch(){
     box.innerHTML='<p class="hint">Searching…</p>';
     try{
       const r=await fetch('api/combined',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({conditions:conds, limit:parseInt(limit,10)||100})});
+        body:JSON.stringify({conditions:conds, operator:curBoolOp(), limit:parseInt(limit,10)||100})});
       renderRecords(await r.json());
     }catch(e){ box.innerHTML=`<p class="hint err">Search failed: ${esc(e.message)}</p>`; }
     return;
@@ -1210,6 +1233,10 @@ $('#searchForm').addEventListener('submit', e=>{ e.preventDefault(); runSearch()
 // populate the field-type dropdowns + wire the advanced-search controls
 $('#qType').innerHTML = typeOptions('auto');
 $('#bulkType').innerHTML = typeOptions('email');
+// contains is only meaningful on some fields — enable/disable it as the field changes
+$('#qType').addEventListener('change', ()=>syncContains($('#qType'), $('#qContains')));
+syncContains($('#qType'), $('#qContains'));
+$('#boolOp').addEventListener('change', refreshBoolUI);
 $('#addAnd').onclick = addAndRow;
 $('#bulkToggle').onclick = toggleBulk;
 $('#bulkRun').onclick = runBulk;

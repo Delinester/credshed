@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 logging.getLogger('credshed').setLevel(logging.ERROR)
 from lib.credshed import CredShed          # noqa: E402
 from lib.account import Account            # noqa: E402
+from lib.errors import CredShedError       # noqa: E402
 
 cs = CredShed()
 PASS, FAIL = [], []
@@ -129,6 +130,61 @@ def main():
         res_neg = list(cs.search(host, query_type='service', limit=200))
         check('service search does not over-match siblings',
               all(a.service == host or a.service.endswith('.' + host) for a in res_neg))
+
+    # CONTAINS (substring) on SERVICE + DOMAIN ----------------------------
+    if hostv:
+        host = hostv[::-1]
+        frag = next((host[i:i+4] for i in range(len(host) - 3)
+                     if host[i:i+4].isalnum() and host[i:i+4].isascii()), None)
+        if frag and len(frag) >= 3:
+            resc = list(cs.db.search(frag, query_type="service", mode="contains", limit=60))
+            check(f'service CONTAINS "{frag}" -> every hit contains it',
+                  bool(resc) and all(frag.lower() in (a.service or '').lower() for a in resc),
+                  f'{len(resc)} hits')
+    for frag in ['mail', 'gmail', 'yahoo', 'com']:
+        resd = list(cs.db.search(frag, query_type="domain", mode="contains", limit=50))
+        if resd:
+            check(f'domain CONTAINS "{frag}" -> every hit contains it',
+                  all(frag in (a.domain or '').lower() for a in resd), f'{len(resd)} hits')
+            break
+    # contains guard: <3 chars rejected
+    try:
+        list(cs.db.search("ab", query_type="service", mode="contains", limit=1))
+        check('contains <3 chars rejected', False, 'no error')
+    except CredShedError:
+        check('contains <3 chars rejected', True)
+
+    # OR vs AND combined ---------------------------------------------------
+    # OR of two clean service hosts: every hit must match ONE of them (exact or subdomain)
+    # search_combined returns Account.json results, where 'v' is already the display
+    # (un-reversed) service host — so do NOT reverse it again here
+    def svc_of(x):
+        return x.get('v') or ''
+    def svc_match(h, host):
+        return h == host or h.endswith('.' + host)
+    ror = cs.db.search_combined(
+        [{'type': 'service', 'value': 'roblox.com'}, {'type': 'service', 'value': 'minecraft.net'}],
+        operator='or', limit=40)
+    check('OR combined: operator flag + every hit matches a condition',
+          ror.get('operator') == 'or'
+          and all(svc_match(svc_of(x), 'roblox.com') or svc_match(svc_of(x), 'minecraft.net')
+                  for x in ror['results']),
+          f"{ror['count']} hits")
+    # AND of two SERVICE hosts must be empty/consistent (v is single-valued, can't be two
+    # distinct hosts) — and the operator flag is set
+    rand = cs.db.search_combined(
+        [{'type': 'domain', 'value': 'gmail.com'}, {'type': 'service', 'value': 'roblox.com'}],
+        operator='and', limit=10)
+    check('AND combined: operator flag', rand.get('operator') == 'and', f"{rand['count']} hits")
+    # OR >= AND for the same two conditions (OR is the looser join)
+    por = cs.db.search_combined(
+        [{'type': 'domain', 'value': 'gmail.com'}, {'type': 'service', 'value': 'roblox.com'}],
+        operator='or', limit=200)
+    pand = cs.db.search_combined(
+        [{'type': 'domain', 'value': 'gmail.com'}, {'type': 'service', 'value': 'roblox.com'}],
+        operator='and', limit=200)
+    check('OR count >= AND count (looser join)', por['count'] >= pand['count'],
+          f"or={por['count']} and={pand['count']}")
 
     # REGIONAL STATS ------------------------------------------------------
     rs = cs.db.region_stats(target='email')

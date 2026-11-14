@@ -301,7 +301,14 @@ class DB():
 
         elif query_type == 'domain':
             kw = keyword.strip().lower()
-            if kw.startswith('.'):
+            if contains:
+                # substring match on the email domain: domains are stored as the reversed
+                # _id prefix (before '|'), and reverse preserves substring containment, so
+                # a domain containing s  <=>  the _id domain part contains reverse(s).
+                # [^|]* keeps the match inside the domain part (never the account-hash tail).
+                _require_contains(kw)
+                query = {'_id': {'$regex': r'^[^|]*' + re.escape(kw[::-1])}}
+            elif kw.startswith('.'):
                 # ".kz" is a domain-ZONE query (same as tld): emit the tight reversed-
                 # zone prefix ^<rev>\. — a bounded _id-index scan — NOT <rev>[^|]*\|,
                 # which the planner ran as an unbounded scan to the time limit.  It is
@@ -370,7 +377,13 @@ class DB():
 
         elif query_type == 'service':
             kw = keyword.strip().lower()
-            if kw.startswith('.'):
+            if contains:
+                # substring match on the service host: v stores the reversed host, and
+                # reverse preserves substring containment, so host contains s <=> v
+                # contains reverse(s).  idx_v bounds the scan to docs that carry a service.
+                _require_contains(kw)
+                query = {'v': {'$regex': re.escape(kw[::-1]), '$options': 'i'}}
+            elif kw.startswith('.'):
                 # service-zone query, e.g. "-q service .ru"
                 z = kw.lstrip('.')
                 if not z:
@@ -1259,12 +1272,16 @@ class DB():
         return {'query': str(keyword), 'type': qt, 'count': len(out),
                 'results': out, 'truncated': truncated, 'has_more': has_more, 'note': note}
 
-    def search_combined(self, conditions, limit=100, max_time_ms=10000):
+    def search_combined(self, conditions, limit=100, max_time_ms=10000, operator='and'):
         '''
-        Boolean AND search: every condition must hold on the same account.  Each
-        condition is {'type': <query_type>, 'value': <term>, 'mode': exact|contains}.
-        e.g. [{'type':'domain','value':'gmail.com'}, {'type':'service','value':'roblox.com'}]
-        -> accounts whose email domain is gmail.com AND who were breached on roblox.com.
+        Boolean AND / OR search across several conditions.  With operator='and' every
+        condition must hold on the SAME account; with operator='or' an account matching
+        ANY condition is returned.  Each condition is {'type': <query_type>, 'value':
+        <term>, 'mode': exact|contains}.
+        e.g. AND [{'type':'domain','value':'gmail.com'}, {'type':'service','value':'roblox.com'}]
+          -> accounts whose email domain is gmail.com AND who were breached on roblox.com;
+             OR [{'type':'service','value':'roblox.com'}, {'type':'service','value':'minecraft.net'}]
+          -> accounts breached on roblox.com OR minecraft.net.
         Returns the same shape as search_records.
         '''
         if not isinstance(conditions, list):
@@ -1274,12 +1291,16 @@ class DB():
             raise CredShedError('No search conditions given')
         if len(conds) > 8:
             raise CredShedError('Too many conditions (max 8)')
+        op = str(operator).lower().strip()
+        if op not in ('and', 'or'):
+            op = 'and'
+        mongo_op = '$or' if op == 'or' else '$and'
         # str()-coerce type/value so a non-string (e.g. an injected {"$ne":1}) is rejected
         # as an unknown type by validate_query_type rather than crashing on .strip()
         subqueries = [self._build_query(str(c['value']), str(c.get('type', 'auto')),
                                         mode=str(c.get('mode', 'exact')))
                       for c in conds]
-        query = subqueries[0] if len(subqueries) == 1 else {'$and': subqueries}
+        query = subqueries[0] if len(subqueries) == 1 else {mongo_op: subqueries}
         lim = max(1, int(limit))
         out, truncated, has_more = [], False, False
         try:
@@ -1294,9 +1315,9 @@ class DB():
                     continue
         except pymongo.errors.ExecutionTimeout:
             truncated = True
-        label = ' AND '.join(f"{c.get('type','auto')}={c['value']}" for c in conds)
-        return {'query': label, 'type': 'combined', 'conditions': conds, 'count': len(out),
-                'results': out, 'truncated': truncated, 'has_more': has_more}
+        label = (f' {op.upper()} ').join(f"{c.get('type','auto')}={c['value']}" for c in conds)
+        return {'query': label, 'type': 'combined', 'conditions': conds, 'operator': op,
+                'count': len(out), 'results': out, 'truncated': truncated, 'has_more': has_more}
 
     def bulk_lookup(self, query_type, values, max_time_ms=15000, per_value=50, max_values=1000):
         '''

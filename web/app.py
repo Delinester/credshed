@@ -180,8 +180,9 @@ def api_search(q: str, type: str = 'auto', limit: int = 100, mode: str = 'exact'
 
 @app.post('/api/combined')
 async def api_combined(request: Request):
-    '''Boolean AND search: every condition must hold on the same account.
-    Body: {"conditions":[{"type","value","mode"}...], "limit":N}.'''
+    '''Boolean AND / OR search across conditions.  operator='and' (default) requires
+    every condition on the same account; 'or' matches any.
+    Body: {"conditions":[{"type","value","mode"}...], "operator":"and|or", "limit":N}.'''
     try:
         body = await request.json()
     except Exception:
@@ -189,6 +190,7 @@ async def api_combined(request: Request):
     if not isinstance(body, dict):
         return JSONResponse({'error': 'body must be a JSON object'}, status_code=400)
     conditions = body.get('conditions') or []
+    operator = str(body.get('operator', 'and')).lower()
     try:
         n = int(body.get('limit', 100) or 100)
     except (TypeError, ValueError):
@@ -196,7 +198,7 @@ async def api_combined(request: Request):
     limit = SEARCH_MAX if n <= 0 else max(1, min(n, SEARCH_MAX))
     max_ms = min(30000, max(10000, limit * 2))
     try:
-        data = credshed().db.search_combined(conditions, limit=limit, max_time_ms=max_ms)
+        data = credshed().db.search_combined(conditions, limit=limit, max_time_ms=max_ms, operator=operator)
         data['limit'] = limit
         return JSONResponse(data)
     except CredShedError as e:
