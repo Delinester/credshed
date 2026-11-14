@@ -845,7 +845,7 @@ class DB():
         pw, usr, svc, dom = Counter(), Counter(), Counter(), Counter()
         cov = {'with_password': 0, 'with_service': 0, 'with_hash': 0}
         lt = {'email': 0, 'username': 0, 'phone': 0}
-        samples, n = [], 0
+        samples, n, sample_timed_out = [], 0, False
         try:
             for d in coll.find(match, {'e': 1, 'u': 1, 'p': 1, 'h': 1, 'm': 1, 't': 1, 'v': 1, 's': 1},
                                limit=sample_n, max_time_ms=max_ms):
@@ -862,7 +862,7 @@ class DB():
                     try: samples.append(Account.from_document(d).json)
                     except Exception: pass
         except pymongo.errors.ExecutionTimeout:
-            pass   # best-effort sample — keep what we gathered
+            sample_timed_out = True   # scan hit the time cap (e.g. idx_v rebuilding) — sample is partial
 
         # ---- 3. PRIMARY breakdown (breached services for a service zone / email domains
         # for an email zone).  Prefer an EXACT, COMPLETE index-backed group-up over the
@@ -907,7 +907,10 @@ class DB():
         # summary's zone cap.  Otherwise: the exact sample count when the whole zone fit
         # in the sample, else the per-source histogram rows-total (an account in N
         # breaches counted N times) scaled from the sample — necessarily an estimate.
-        estimated = (n >= sample_n)                      # secondary stats sampled vs exhaustive
+        # sample_timed_out ⇒ n is a partial undercount (the scan was cut off, not the zone
+        # exhausted), so treat it as an estimate and fall back to the histogram total
+        # (which comes from source stats, unaffected by a field-index rebuild) instead of n.
+        estimated = (n >= sample_n) or sample_timed_out  # secondary stats sampled vs exhaustive
         if complete and prim_rows is not None:
             total = sum(c for _, c in prim_rows)         # exact distinct-account count for the zone
         else:
@@ -939,6 +942,26 @@ class DB():
             domains = prim_rows if prim_rows is not None else merge_primary(dom)   # email domains IN the zone
             services = sample_list(svc)                                            # services the victims use (sampled)
 
+        # Degradation note: a zone small enough to roll up exactly (hist_total <= cap) that
+        # came back NOT complete, or whose sample scan timed out, almost always means the
+        # field index this drill-down scans (idx_v / _id) is rebuilding after a bulk import.
+        # Say so, with live progress, so partial counts aren't mistaken for the real ones.
+        group_failed = (0 <= hist_total <= COMPLETE_MAX) and (prim_rows is None)
+        note, idx_status = '', None
+        if sample_timed_out or group_failed:
+            try:
+                idx_status = self.index_build_status()
+            except Exception:
+                idx_status = None
+            if idx_status and idx_status.get('building'):
+                pct, eta = idx_status.get('percent'), idx_status.get('eta_min')
+                note = ('Secondary indexes are rebuilding after a bulk import'
+                        + (f' ({pct}% done' + (f', ~{eta} min left)' if eta is not None else ')') if pct is not None else '')
+                        + ' — this drill-down is partial and its counts are estimates until the rebuild finishes.')
+            else:
+                note = ('This drill-down scan hit its time limit — the breakdown is partial '
+                        '(the zone may be very large, or a field index may be rebuilding).')
+
         return {
             'zone': label, 'kind': kind, 'target': target, 'total_accounts': total,
             'coverage': coverage, 'login_types': login_types,
@@ -952,6 +975,8 @@ class DB():
             'estimated': estimated, 'sampled': n,
             'complete': complete,
             'total_exact': bool(complete and prim_rows is not None),
+            # degraded / rebuilding awareness (empty/absent when the drill-down is healthy)
+            'note': note, 'index_build': idx_status,
         }
 
     def domain_detail(self, domain, sample=30, sample_n=5000, max_ms=8000):

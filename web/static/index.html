@@ -956,6 +956,14 @@ function renderTldModal(d){
     <div class="m"><div class="k">Email / User / Phone</div><div class="v tnum" style="font-size:15px">${bigVal(lt.email||0)} / ${bigVal(lt.username||0)} / ${bigVal(lt.phone||0)}</div></div>
   </div>`;
   const primWord = target==='service' ? 'services' : 'domains';
+  // rebuild/degraded banner: when the drill-down scan was cut off (usually idx_v
+  // rebuilding after a bulk import) the backend sends a note + live build progress
+  const ib = d.index_build||{};
+  const ibPct = (ib.building && ib.percent!=null) ? ` <span class="ib-pct">${ib.percent}%</span>` : '';
+  const rebuildNote = d.note
+    ? `<p class="hint warn" style="margin:0 0 12px">⚠ ${esc(d.note)}${ibPct}</p>`
+      + (ib.building && ib.percent!=null ? `<div class="ib-bar" style="margin:-6px 0 12px"><div class="ib-fill" style="width:${Math.max(0,Math.min(100,ib.percent))}%"></div></div>` : '')
+    : '';
   const partialNote = d.partial
     ? `<p class="hint warn" style="margin:0 0 12px">⚠ <b>${zlabel}</b> is too large to roll up in real time, so the breakdown below is incomplete. Use the search box to look up specific domains, services or passwords.</p>`
     : `<p class="hint" style="margin:0 0 12px; color:var(--muted)">`
@@ -966,7 +974,7 @@ function renderTldModal(d){
             ? `Passwords, usernames, coverage and the identity split are <b>estimated from a ${fmt(d.sampled)}-record sample</b> (marked ≈); open a specific entity for exact records.`
             : `Passwords, usernames and coverage are exact for this ${ztype}.`)
         + `</p>`;
-  body.innerHTML = partialNote + tiles + `
+  body.innerHTML = rebuildNote + partialNote + tiles + `
     <section class="grid">
       ${domCard}
       <div class="card"><h3>Passwords</h3><p class="note">Most used by accounts in this zone (popular → rare).</p><div id="tPw"></div></div>
