@@ -436,19 +436,25 @@ async function getFull(metric, target){
 function render(d){
   CURRENT=d;
   const t=d.totals;
-  // headline = true unique documents; the sum-of-sources (rows) is shown as context
+  // Two honest headlines: UNIQUE accounts (deduplicated documents) and TOTAL records
+  // (the sum across sources — an account found in N breaches counts N times).  The
+  // coverage counts (password / service / hash / phone) are per-source sums too, so
+  // they are framed consistently against RECORDS (rows), never against unique accounts
+  // — otherwise a coverage number legitimately exceeds the account headline (e.g. 809M
+  // "with password" vs 581M unique) and reads as if it were wrong.
   const uniq = t.unique_accounts || t.accounts, rows = t.accounts;
-  const acctSub = uniq!==rows ? `${fmt(d.sources.length)} sources · ${fmt(rows)} rows · ${bytesH(t.filesize)}`
-                              : `${fmt(d.sources.length)} source${d.sources.length!=1?'s':''} · ${bytesH(t.filesize)}`;
+  const nsrc = `${fmt(d.sources.length)} source${d.sources.length!=1?'s':''}`;
+  const recSub = (rows>uniq) ? `rows across all breaches · ${(rows/uniq).toFixed(2)}× per account` : 'records';
   const tiles=[
-    ['Accounts', uniq, acctSub, 'var(--s1)'],
-    ['With breached service', t.with_service, `${pct(t.with_service,rows).toFixed(0)}% of rows`, 'var(--s3)'],
-    ['With password', t.with_password, `${pct(t.with_password,t.accounts).toFixed(0)}% plaintext`, 'var(--s1)'],
-    ['With phone', t.phone, `${pct(t.phone,t.accounts).toFixed(1)}% of records`, 'var(--s2)'],
-    ['With hash', t.with_hash, 'hashed secrets', 'var(--s5)'],
-    ['Indexed fields', d.indexes.filter(x=>x!=='_id_').length+1, d.indexes.join(', '), 'var(--s4)'],
+    ['Unique accounts', uniq, `deduplicated · ${nsrc} · ${bytesH(t.filesize)}`, 'var(--s1)'],
+    ['Total records', rows, recSub, 'var(--s4)'],
+    ['With password', t.with_password, `${pct(t.with_password,rows).toFixed(0)}% of records · plaintext`, 'var(--s1)'],
+    ['With breached service', t.with_service, `${pct(t.with_service,rows).toFixed(0)}% of records`, 'var(--s3)'],
+    ['With phone', t.phone, `${pct(t.phone,rows).toFixed(1)}% of records`, 'var(--s2)'],
+    ['With hash', t.with_hash, `${pct(t.with_hash,rows).toFixed(1)}% of records · hashed`, 'var(--s5)'],
+    ['Indexed fields', d.indexes.filter(x=>x!=='_id_').length+1, d.indexes.join(', '), 'var(--muted)'],
   ];
-  $('#tiles').innerHTML = tiles.map(([k,v,x,c])=>`<div class="tile"><div class="k"><span class="swatch" style="background:${c}"></span>${k}</div><div class="v tnum">${bigVal(v)}</div><div class="x">${esc(x)}</div></div>`).join('');
+  $('#tiles').innerHTML = tiles.map(([k,v,x,c])=>`<div class="tile" title="${esc(k)}: ${fmt(v)}"><div class="k"><span class="swatch" style="background:${c}"></span>${k}</div><div class="v tnum">${bigVal(v)}</div><div class="x">${esc(x)}</div></div>`).join('');
 
   const lt=[['Email',t.email,'var(--s1)'],['Username',t.username,'var(--s2)'],['Phone',t.phone,'var(--s3)']];
   const ltot=lt.reduce((a,b)=>a+b[1],0)||1;
