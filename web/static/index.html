@@ -927,9 +927,9 @@ function renderTldModal(d){
   const domCard = `<div class="card"><h3>${domTitle}</h3><p class="note">${domNote}</p><div id="tDom"></div></div>`;
   // per-zone threat-landscape tiles (coverage + login identity), from the same aggregation
   const cov=d.coverage||{}, lt=d.login_types||{}, tot=total||0, zp=n=>tot?Math.round(100*n/tot):0;
-  const est = d.estimated, approx = est ? '≈' : '';
+  const est = d.estimated, approx = est ? '≈' : '', totExact = d.total_exact===true;
   const tiles = `<div class="mini">
-    <div class="m"><div class="k">Accounts</div><div class="v tnum">${bigVal(tot)}</div></div>
+    <div class="m"><div class="k">Accounts</div><div class="v tnum">${(!totExact&&est)?approx:''}${bigVal(tot)}</div>${totExact?'<div class="k">exact count</div>':(est?'<div class="k">estimated</div>':'')}</div>
     <div class="m"><div class="k">With password</div><div class="v tnum">${approx}${bigVal(cov.with_password||0)}</div><div class="k">${zp(cov.with_password||0)}% plaintext</div></div>
     <div class="m"><div class="k">With breached service</div><div class="v tnum">${approx}${bigVal(cov.with_service||0)}</div><div class="k">${zp(cov.with_service||0)}% of records</div></div>
     <div class="m"><div class="k">With hash</div><div class="v tnum">${approx}${bigVal(cov.with_hash||0)}</div></div>
