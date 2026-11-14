@@ -825,40 +825,14 @@ class DB():
         except pymongo.errors.ExecutionTimeout:
             pass   # best-effort sample — keep what we gathered
 
-        # exact when the whole zone fit in the sample; else the histogram total, with
-        # the sampled coverage/login split scaled up to it (an estimate)
-        estimated = (n >= sample_n)
-        total = (hist_total or n) if estimated else n
-        scale = (total / n) if n else 0
-        coverage = {k: int(round(v * scale)) for k, v in cov.items()}
-        login_types = {k: int(round(v * scale)) for k, v in lt.items()}
-        passwords = pw.most_common(top_n)
-        usernames = usr.most_common(top_n)
-
-        # The PRIMARY breakdown (email domains for an email zone / breached services for
-        # a service zone) merges the precomputed histogram (exact counts for heavy
-        # hitters) with the sample, which captures the long tail that never made any
-        # source's capped top-N.  That tail is why ccTLD / niche zones previously showed
-        # an EMPTY services/domains list — the whole point of this drill-down.
-        def merge_primary(sample_counter):
-            out = dict(primary)                        # exact histogram counts (zone-filtered)
-            for name, c in sample_counter.items():
-                if name not in out:
-                    out[name] = int(round(c * scale))  # scaled estimate for the tail
-            return sorted(out.items(), key=lambda x: x[1], reverse=True)[:top_n]
-
-        def sample_list(sample_counter):
-            return sorted(((k, int(round(c * scale))) for k, c in sample_counter.items()),
-                          key=lambda x: x[1], reverse=True)[:top_n]
-
-        # For the PRIMARY breakdown we prefer an EXACT, COMPLETE index-backed group-up
-        # over the whole zone (every service / every domain, not a sample) so an
-        # investigator sees all affected services in a region.  It is bounded two ways
-        # so it stays fast: skipped for a zone bigger than COMPLETE_MAX accounts (a
-        # giant generic zone like .com, where a group-up would be too heavy and the
-        # histogram+sample estimate is used instead), and capped by max_time_ms as a
-        # safety net.  The ccTLD / country case this matters for is always well under
-        # the cap, so it runs in well under a second on an indexed field.
+        # ---- 3. PRIMARY breakdown (breached services for a service zone / email domains
+        # for an email zone).  Prefer an EXACT, COMPLETE index-backed group-up over the
+        # whole zone (every service / every domain, not a sample) so an investigator sees
+        # ALL affected entities in a region.  Bounded two ways to stay fast: skipped for a
+        # zone bigger than COMPLETE_MAX accounts (a giant generic zone like .com, where a
+        # group-up would be too heavy and the histogram+sample estimate is used instead),
+        # and capped by all_ms as a safety net.  Every ccTLD / country is well under the
+        # cap, so it runs in well under a second on an indexed field.
         all_limit = 10000           # generous cap: covers every ccTLD/country completely
         COMPLETE_MAX = 5_000_000    # skip the group-up for a zone bigger than this (use the estimate)
 
@@ -878,16 +852,53 @@ class DB():
             except pymongo.errors.PyMongoError:
                 return None, False   # too big / timed out -> caller falls back to the estimate
 
-        complete = False
+        complete, prim_rows = False, None
         if target == 'service':
-            g, complete = complete_group('$v') if 0 <= hist_total <= COMPLETE_MAX else (None, False)
-            services = g if g is not None else merge_primary(svc)     # services hosted IN the zone
-            domains = sample_list(dom)                                # victim email domains (sampled)
+            prim_rows, complete = (complete_group('$v')
+                                   if 0 <= hist_total <= COMPLETE_MAX else (None, False))
         else:
-            g, complete = (complete_group({'$arrayElemAt': [{'$split': ['$_id', '|']}, 0]})
-                           if 0 <= hist_total <= COMPLETE_MAX else (None, False))
-            domains = g if g is not None else merge_primary(dom)      # email domains IN the zone
-            services = sample_list(svc)                              # services the victims use (sampled)
+            prim_rows, complete = (complete_group({'$arrayElemAt': [{'$split': ['$_id', '|']}, 0]})
+                                   if 0 <= hist_total <= COMPLETE_MAX else (None, False))
+
+        # ---- 4. totals & scale ----
+        # When the breakdown is EXACT, the zone's true account count is the SUM of that
+        # breakdown (one row per matched document): exact, and self-consistent with the
+        # list the investigator sees (its counts add up to this total).  This also makes
+        # a country exact regardless of how many minor sub-zones fall past the cached
+        # summary's zone cap.  Otherwise: the exact sample count when the whole zone fit
+        # in the sample, else the per-source histogram rows-total (an account in N
+        # breaches counted N times) scaled from the sample — necessarily an estimate.
+        estimated = (n >= sample_n)                      # secondary stats sampled vs exhaustive
+        if complete and prim_rows is not None:
+            total = sum(c for _, c in prim_rows)         # exact distinct-account count for the zone
+        else:
+            total = (hist_total or n) if estimated else n
+        scale = (total / n) if n else 0
+        coverage = {k: int(round(v * scale)) for k, v in cov.items()}
+        login_types = {k: int(round(v * scale)) for k, v in lt.items()}
+        passwords = pw.most_common(top_n)
+        usernames = usr.most_common(top_n)
+
+        # Fallbacks for when the exact group-up was skipped (giant zone) or timed out:
+        # merge the precomputed histogram heavy-hitters with the sample's long tail —
+        # that tail is why ccTLD / niche zones previously showed an EMPTY list.
+        def merge_primary(sample_counter):
+            out = dict(primary)                        # exact histogram counts (zone-filtered)
+            for name, c in sample_counter.items():
+                if name not in out:
+                    out[name] = int(round(c * scale))  # scaled estimate for the tail
+            return sorted(out.items(), key=lambda x: x[1], reverse=True)[:top_n]
+
+        def sample_list(sample_counter):
+            return sorted(((k, int(round(c * scale))) for k, c in sample_counter.items()),
+                          key=lambda x: x[1], reverse=True)[:top_n]
+
+        if target == 'service':
+            services = prim_rows if prim_rows is not None else merge_primary(svc)  # services hosted IN the zone
+            domains = sample_list(dom)                                             # victim email domains (sampled)
+        else:
+            domains = prim_rows if prim_rows is not None else merge_primary(dom)   # email domains IN the zone
+            services = sample_list(svc)                                            # services the victims use (sampled)
 
         return {
             'zone': label, 'kind': kind, 'target': target, 'total_accounts': total,
@@ -895,11 +906,13 @@ class DB():
             'top_domains': domains, 'top_passwords': passwords,
             'top_services': services, 'top_usernames': usernames,
             'sample': samples, 'partial': False,
+            # 'estimated' -> the secondary stats (passwords, usernames, coverage, identity
+            # split) are a sample estimate (marked ≈ in the UI).  'complete' -> the primary
+            # breakdown is the EXACT, exhaustive set for the zone AND total_accounts is its
+            # exact sum (not a histogram estimate); 'total_exact' mirrors that for clarity.
             'estimated': estimated, 'sampled': n,
-            # True when the primary breakdown (services for a service zone / domains for
-            # an email zone) is the EXACT, exhaustive list for the zone rather than a
-            # histogram+sample estimate.
             'complete': complete,
+            'total_exact': bool(complete and prim_rows is not None),
         }
 
     def domain_detail(self, domain, sample=30, sample_n=5000, max_ms=8000):
