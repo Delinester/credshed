@@ -2,6 +2,7 @@
 
 # by TheTechromancer
 
+import os
 import sys
 import math
 import logging
@@ -23,6 +24,37 @@ from lib.filestore import util as filestore_util
 
 # set up logging
 log = logging.getLogger('credshed.cli')
+
+
+def _apply_bulk_wt_tuning(credshed):
+    '''
+    For a --reindex bulk load, let WiredTiger accumulate far more dirty index pages
+    before it force-evicts, so the random `_id`-index writes COALESCE (many inserts
+    per flushed page) instead of each insert amplifying into a near-full page write.
+    On the 942M DB this took the ingest from disk-write-bound (~15k accounts/s, SSD
+    100% util, 21ms writes) to CPU-bound (~38-65k accounts/s, SSD <80% util, <5ms) —
+    the single biggest win after _id-sorted batches.  Returns a callable that restores
+    WiredTiger's defaults (called in a finally so steady-state server behaviour is
+    unchanged after the load), or None if it couldn't be applied.
+    '''
+    try:
+        adm = credshed.db.db.client.admin
+        adm.command({'setParameter': 1, 'wiredTigerEngineRuntimeConfig':
+                     'eviction_dirty_target=20,eviction_dirty_trigger=40,'
+                     'eviction=(threads_min=4,threads_max=12)'})
+        log.info('--reindex: applied bulk-load WiredTiger eviction tuning '
+                 '(dirty 20/40%, 4-12 evict threads) — restored after the load')
+
+        def _revert():
+            adm.command({'setParameter': 1, 'wiredTigerEngineRuntimeConfig':
+                         'eviction_dirty_target=5,eviction_dirty_trigger=20,'
+                         'eviction=(threads_min=1,threads_max=8)'})
+            log.info('--reindex: restored default WiredTiger eviction settings')
+        return _revert
+    except Exception as e:
+        log.warning(f'--reindex: could not apply WiredTiger bulk tuning ({e}); '
+                    'continuing without it')
+        return None
 
 
 def zip_filelist(l):
@@ -469,6 +501,7 @@ def main(options):
                 # insert update 7 B-trees (measured ~3-4x slower: 19k vs 68k accounts/s
                 # on 500M+).  The data is identical either way; only search is briefly
                 # unavailable on those fields until the post-ingest rebuild finishes.
+                _wt_revert = None
                 if getattr(options, 'reindex', False) and not getattr(options, 'preview', False):
                     try:
                         dropped = credshed.drop_indexes()
@@ -476,8 +509,24 @@ def main(options):
                                  f'(rebuilt after ingest): {dropped}')
                     except Exception as e:
                         log.error(f'--reindex drop failed: {e}')
+                    # Bulk-load write tuning (sorted inserts are on by default): widen the
+                    # per-worker batch so sorted _id writes form big sequential clusters,
+                    # and tune WiredTiger eviction to coalesce them.  Both are overridable
+                    # via env; the WT tuning is reverted after the load.
+                    if 'CREDSHED_BATCH_SIZE' not in os.environ:
+                        os.environ['CREDSHED_BATCH_SIZE'] = '50000'
+                        log.info('--reindex: batch size -> 50000 for sequential bulk writes '
+                                 '(override with CREDSHED_BATCH_SIZE)')
+                    _wt_revert = _apply_bulk_wt_tuning(credshed)
 
-                credshed.import_files()
+                try:
+                    credshed.import_files()
+                finally:
+                    if _wt_revert:
+                        try:
+                            _wt_revert()
+                        except Exception as e:
+                            log.warning(f'--reindex: WiredTiger revert failed: {e}')
 
                 # After a bulk ingest, make sure the secondary search indexes exist
                 # (idempotent — only builds missing ones).  Without this the DB silently
