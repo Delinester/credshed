@@ -513,10 +513,19 @@ def main(options):
                     # per-worker batch so sorted _id writes form big sequential clusters,
                     # and tune WiredTiger eviction to coalesce them.  Both are overridable
                     # via env; the WT tuning is reverted after the load.
+                    #
+                    # MEMORY-AWARE: a fixed large batch (e.g. 50k) x many workers can
+                    # over-commit RAM against the WiredTiger cache and drive the box into
+                    # swap — which cripples the ingest far worse than a small batch helps.
+                    # So scale the batch DOWN with the worker count, keeping the total
+                    # in-flight docs across all workers roughly bounded (~720k), i.e.
+                    # ~15k at 48 workers, ~30k at 24, clamped to [5k, 50k].
                     if 'CREDSHED_BATCH_SIZE' not in os.environ:
-                        os.environ['CREDSHED_BATCH_SIZE'] = '50000'
-                        log.info('--reindex: batch size -> 50000 for sequential bulk writes '
-                                 '(override with CREDSHED_BATCH_SIZE)')
+                        _w = options.workers or (os.cpu_count() or 8)
+                        _batch = max(5000, min(50000, 720000 // max(1, _w)))
+                        os.environ['CREDSHED_BATCH_SIZE'] = str(_batch)
+                        log.info(f'--reindex: batch size -> {_batch} for {_w} workers '
+                                 '(sequential bulk writes, memory-bounded; override with CREDSHED_BATCH_SIZE)')
                     _wt_revert = _apply_bulk_wt_tuning(credshed)
 
                 try:
