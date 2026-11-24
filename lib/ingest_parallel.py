@@ -36,6 +36,11 @@ from .config import config
 
 log = logging.getLogger('credshed.ingest_parallel')
 
+# Insert each batch in _id-sorted order so B-tree writes cluster instead of scattering
+# across a larger-than-RAM _id index (big win on a write-saturated SSD at 500M+; a cheap
+# no-op when the index still fits in cache).  Disable with CREDSHED_SORT_INSERTS=0.
+_SORT_INSERTS = os.environ.get('CREDSHED_SORT_INSERTS', '1') not in ('0', 'false', 'no', '')
+
 
 # how many top entries each worker ships back for the pruned (long-tail) counters.
 # A key only needs to survive in ONE worker's top-K to be merged exactly; a key
@@ -64,9 +69,17 @@ def _flush_once(coll, docs, source_id):
     PyMongoError on a transient failure so the caller can bound its retries.
     Returns the number of NEW (actually inserted) documents, so the caller can
     report unique_accounts.
+
+    When the DB is far larger than RAM (the `_id` index no longer fits in the
+    WiredTiger cache), inserting a batch in _id-SORTED order makes the B-tree writes
+    land on adjacent/clustered pages instead of scattering randomly across a 50GB+
+    index — far kinder to a write-saturated SSD.  Toggleable (default ON) since on a
+    DB that still fits in RAM it is a cheap no-op either way.
     '''
     if not docs:
         return 0
+    if _SORT_INSERTS:
+        docs.sort(key=lambda d: d['_id'])     # cluster _id B-tree writes (helps when index > RAM)
     try:
         coll.insert_many(docs, ordered=False)
         return len(docs)
@@ -349,6 +362,13 @@ def run_parallel_ingest(source, nworkers, presniff, encoding, batch_size=5000,
     The finer ranges let a worker that drew a light (banner-heavy) slice steal the
     next one instead of idling, so the cores stay saturated to the end.
     '''
+    # env override lets a large-DB bulk load widen batches (bigger _id-sorted batches
+    # cluster more B-tree writes = more sequential I/O on a write-bound SSD) without a
+    # code change: CREDSHED_BATCH_SIZE=20000
+    try:
+        batch_size = max(500, int(os.environ.get('CREDSHED_BATCH_SIZE', batch_size)))
+    except (TypeError, ValueError):
+        pass
     path = str(source.file)
     size = source.file.size
     ranges = compute_ranges(size, max(1, nworkers * max(1, chunk_factor)))
