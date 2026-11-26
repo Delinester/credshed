@@ -1521,18 +1521,27 @@ class DB():
     def _write_batch(self, coll, docs, source_id):
         '''
         Insert a batch of account documents (unordered).  _id collisions mean the
-        account already exists (same or another source) — merge this source into
-        their `s` array so provenance is preserved.  Retries transient errors.
-        Returns the number of NEW (actually inserted) documents (for unique_accounts).
+        identical record already exists (the _id hashes the whole account, so the same
+        email with a different password is a DIFFERENT _id and is kept) — by default merge
+        this source into their `s` array so provenance is preserved.  With fast dedup
+        (CREDSHED_FAST_DEDUP / --fast-dedup) the duplicate is dropped without that write.
+        Retries transient errors.  Returns the number of NEW (actually inserted) documents.
         '''
         if not docs:
             return 0
+        import os
+        fast_dedup = os.environ.get('CREDSHED_FAST_DEDUP', '') in ('1', 'true', 'yes', 'on')
         while True:
             try:
                 coll.insert_many(docs, ordered=False)
                 return len(docs)
             except pymongo.errors.BulkWriteError as bwe:
                 errs = bwe.details.get('writeErrors', [])
+                if fast_dedup:
+                    other = sum(1 for e in errs if e.get('code') != 11000)
+                    if other:
+                        log.warning(f'{other} non-duplicate write error(s) for source {source_id}')
+                    return max(0, len(docs) - len(errs))
                 dup_ids, other = [], 0
                 for e in errs:
                     if e.get('code') == 11000:          # duplicate key

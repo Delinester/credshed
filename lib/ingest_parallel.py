@@ -62,19 +62,27 @@ def _topk(counter, k):
     return dict(sorted(counter.items(), key=lambda kv: kv[1], reverse=True)[:k])
 
 
-def _flush_once(coll, docs, source_id):
+def _flush_once(coll, docs, source_id, fast_dedup=False):
     '''
-    One insert_many(unordered) + duplicate-key provenance merge (an _id collision
-    means the account already exists — add this source to its `s` array).  Raises
-    PyMongoError on a transient failure so the caller can bound its retries.
-    Returns the number of NEW (actually inserted) documents, so the caller can
-    report unique_accounts.
+    One insert_many(unordered) that keeps every UNIQUE record.  The `_id` is a hash of
+    the WHOLE account (email + username + password + hashes + misc + phone + service), so
+    two rows that differ in ANY field — e.g. the same email with a different password —
+    have different `_id`s and are BOTH kept; only byte-identical rows collide.  Raises
+    PyMongoError on a transient failure so the caller can bound its retries.  Returns the
+    number of NEW (actually inserted) documents, so the caller can report unique_accounts.
 
-    When the DB is far larger than RAM (the `_id` index no longer fits in the
-    WiredTiger cache), inserting a batch in _id-SORTED order makes the B-tree writes
-    land on adjacent/clustered pages instead of scattering randomly across a 50GB+
-    index — far kinder to a write-saturated SSD.  Toggleable (default ON) since on a
-    DB that still fits in RAM it is a cheap no-op either way.
+    On an `_id` collision the identical record already exists.  Default (fast_dedup=False):
+    record this source in the doc's `s` provenance array (an $addToSet), so you can see
+    every source a record appeared in.  fast_dedup=True: SKIP that provenance update — the
+    duplicate is simply dropped — turning each duplicate from read+read+write into a single
+    existence-check read and removing the second round-trip.  Big win when re-ingesting
+    heavily-overlapping dumps where per-source provenance on duplicates is not needed;
+    WHICH unique records exist is identical either way (dedup is by full-record `_id`, never
+    merged by email/password).
+
+    When the DB is far larger than RAM (the `_id` index no longer fits in the WiredTiger
+    cache), inserting a batch in _id-SORTED order makes the B-tree writes land on
+    adjacent/clustered pages instead of scattering — far kinder to a write-saturated SSD.
     '''
     if not docs:
         return 0
@@ -85,6 +93,14 @@ def _flush_once(coll, docs, source_id):
         return len(docs)
     except pymongo.errors.BulkWriteError as bwe:
         errs = bwe.details.get('writeErrors', [])
+        if fast_dedup:
+            # Duplicates (byte-identical records, code 11000) are dropped with NO provenance
+            # write and NO second round-trip.  Still surface any NON-duplicate write error so
+            # a real problem is never hidden.  inserted = batch minus every write error.
+            other = sum(1 for e in errs if e.get('code') != 11000)
+            if other:
+                log.warning(f'{other} non-duplicate write error(s) for source {source_id}')
+            return max(0, len(docs) - len(errs))
         dup_ids, other = [], 0
         for e in errs:
             if e.get('code') == 11000:
@@ -113,6 +129,8 @@ def _writer_thread(coll, source_id, work_q, fail, inserted, idx):
     blocks permanently.  `inserted` accumulates the count of new (non-duplicate)
     documents written, for unique_accounts reporting.
     '''
+    # read once per worker (env is inherited across the fork from the CLI --fast-dedup flag)
+    fast_dedup = os.environ.get('CREDSHED_FAST_DEDUP', '') in ('1', 'true', 'yes', 'on')
     deadline = None
     while True:
         batch = work_q.get()
@@ -120,7 +138,7 @@ def _writer_thread(coll, source_id, work_q, fail, inserted, idx):
             return
         while True:
             try:
-                inserted[idx] += _flush_once(coll, batch, source_id)   # own slot: no cross-thread race
+                inserted[idx] += _flush_once(coll, batch, source_id, fast_dedup=fast_dedup)   # own slot: no cross-thread race
                 deadline = None
                 break
             except pymongo.errors.PyMongoError as e:

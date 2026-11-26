@@ -494,6 +494,13 @@ def main(options):
                 credshed.preview_files()
 
             elif options.ingest:
+                # --fast-dedup: keep every UNIQUE record but drop byte-identical duplicates
+                # WITHOUT a per-source provenance write (set before the workers fork so they
+                # inherit it).  Independent of --reindex.
+                if getattr(options, 'fast_dedup', False) and not getattr(options, 'preview', False):
+                    os.environ['CREDSHED_FAST_DEDUP'] = '1'
+                    log.info('--fast-dedup: duplicates dropped without per-source provenance '
+                             '(unique records by full-record hash are unaffected)')
                 # DFIR scalability: for a big bulk load, --reindex drops the secondary
                 # search indexes FIRST so every insert only maintains the _id index,
                 # then rebuilds them once at the end.  This is the single biggest ingest
@@ -600,6 +607,7 @@ if __name__ == '__main__':
     parser.add_argument('--drop-indexes', action='store_true',                          help='drop secondary search indexes (faster bulk ingest)')
     parser.add_argument('--no-auto-index', action='store_true',                          help='skip the automatic secondary-index build that normally runs after an ingest')
     parser.add_argument('--reindex', action='store_true',                                help='FAST bulk load: drop secondary indexes before ingesting, rebuild them after (biggest ingest speed-up on a large DB)')
+    parser.add_argument('--fast-dedup', action='store_true', dest='fast_dedup',            help='FAST dedup: keep every UNIQUE record (dedup is by full-record hash, so the same email with a different password is still kept) but DROP byte-identical duplicates WITHOUT recording per-source provenance — skips a read+write per duplicate, big speed-up when re-ingesting overlapping dumps. Omit to keep full per-source provenance.')
     parser.add_argument('--json', action='store_true',                                  help='output search results as JSON lines')
     parser.add_argument('--colons', action='store_true',                                help='output results in legacy colon format (email:user:pass:hash:misc:phone:service)')
     parser.add_argument('-i', '--ingest',   type=Path,  nargs='+',                      help='import files or directories into the database')
